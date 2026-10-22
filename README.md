@@ -4,6 +4,8 @@
 
 A production-grade Chrome extension (Manifest V3) that observes permitted network traffic using the **Chrome DevTools Protocol (CDP)** in real time. It enables data analysts, researchers, and developers to navigate websites (handling pagination, infinite scrolling, searches, and filters) while preserving raw API responses, inferring schemas, deduplicating records, and exporting clean CSV, JSON, or JSONL files.
 
+> 📖 **Looking for a detailed walkthrough?** Check out the comprehensive [**User Guide & Platform Manual (USER_GUIDE.md)**](file:///home/elvin/Projects/tutorials/api-data-csv-extractor/USER_GUIDE.md).
+
 ---
 
 ## Key Features
