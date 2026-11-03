@@ -2,47 +2,61 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 
-function createPng(width, height, r, g, b) {
-  // Signature
+/**
+ * Generates crisp Obsidian-Forest + Electric-Lime rounded-squircle extension icons (16, 48, 128px).
+ */
+function createLimeBrandPng(width, height) {
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-  // IHDR chunk
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr.writeUInt8(8, 8); // 8-bit depth
   ihdr.writeUInt8(6, 9); // RGBA
-  ihdr.writeUInt8(0, 10); // deflate
-  ihdr.writeUInt8(0, 11); // filter
-  ihdr.writeUInt8(0, 12); // no interlace
+  ihdr.writeUInt8(0, 10);
+  ihdr.writeUInt8(0, 11);
+  ihdr.writeUInt8(0, 12);
 
   const ihdrChunk = createChunk('IHDR', ihdr);
-
-  // Raw image data with filter byte per row
   const rowSize = 1 + width * 4;
   const rawData = Buffer.alloc(rowSize * height);
 
+  // Obsidian base (#111c14 -> 17, 28, 20) + Electric Lime accent (#9be44d -> 155, 228, 77)
   for (let y = 0; y < height; y++) {
     const rowOffset = y * rowSize;
-    rawData.writeUInt8(0, rowOffset); // Filter type 0 (None)
+    rawData.writeUInt8(0, rowOffset);
     for (let x = 0; x < width; x++) {
       const pxOffset = rowOffset + 1 + x * 4;
-      // Make a rounded-rect or badge look:
-      const dx = (x - width / 2) / (width / 2);
-      const dy = (y - height / 2) / (height / 2);
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      
-      let cr = r, cg = g, cb = b, ca = 255;
-      if (dist > 0.95) {
-        ca = 0; // transparent corners
-      } else if (dist > 0.85) {
-        // border antialias
-        ca = Math.floor(255 * (0.95 - dist) / 0.1);
+      const nx = (x + 0.5) / width * 2 - 1;
+      const ny = (y + 0.5) / height * 2 - 1;
+      // Superellipse squircle boundary: |x|^4 + |y|^4
+      const squircle = Math.pow(Math.abs(nx), 4.2) + Math.pow(Math.abs(ny), 4.2);
+
+      let cr = 17, cg = 28, cb = 20, ca = 255;
+
+      if (squircle > 1.0) {
+        ca = 0;
+      } else if (squircle > 0.86) {
+        ca = Math.max(0, Math.min(255, Math.floor((255 * (1.0 - squircle)) / 0.14)));
       } else {
-        // inner gradient
-        cr = Math.min(255, Math.floor(r + (1 - dy) * 30));
-        cg = Math.min(255, Math.floor(g + (1 - dy) * 30));
-        cb = Math.min(255, Math.floor(b + (1 - dy) * 30));
+        // Subtle inner lime border ring or center pulse node
+        const rad = Math.sqrt(nx * nx + ny * ny);
+        if (rad < 0.34) {
+          // Crisp bright lime center pulse dot
+          cr = 155;
+          cg = 228;
+          cb = 77;
+        } else if (rad > 0.52 && rad < 0.66) {
+          // Outer radar arc in lime
+          cr = 126;
+          cg = 200;
+          cb = 42;
+        } else {
+          // Deep obsidian gradient
+          cr = Math.min(255, Math.floor(17 + (1 - ny) * 10));
+          cg = Math.min(255, Math.floor(28 + (1 - ny) * 14));
+          cb = Math.min(255, Math.floor(20 + (1 - ny) * 10));
+        }
       }
 
       rawData.writeUInt8(cr, pxOffset);
@@ -95,9 +109,8 @@ function getCrcTable() {
 const iconsDir = path.resolve('public', 'icons');
 fs.mkdirSync(iconsDir, { recursive: true });
 
-// Brand color: Indigo #4f46e5 -> (79, 70, 229)
-fs.writeFileSync(path.join(iconsDir, 'icon-16.png'), createPng(16, 16, 79, 70, 229));
-fs.writeFileSync(path.join(iconsDir, 'icon-48.png'), createPng(48, 48, 79, 70, 229));
-fs.writeFileSync(path.join(iconsDir, 'icon-128.png'), createPng(128, 128, 79, 70, 229));
+fs.writeFileSync(path.join(iconsDir, 'icon-16.png'), createLimeBrandPng(16, 16));
+fs.writeFileSync(path.join(iconsDir, 'icon-48.png'), createLimeBrandPng(48, 48));
+fs.writeFileSync(path.join(iconsDir, 'icon-128.png'), createLimeBrandPng(128, 128));
 
-console.log('Icons generated successfully in public/icons/');
+console.log('Obsidian + Lime extension icons generated successfully in public/icons/');

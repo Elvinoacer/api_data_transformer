@@ -21,32 +21,87 @@ export function redactSensitiveUrl(
     parsed.search = params.toString() ? `?${params.toString()}` : '';
     return parsed.toString();
   } catch {
-    // If invalid URL, return as-is or sanitized
     return urlStr;
   }
 }
 
+function isDynamicIdSegment(seg: string): boolean {
+  if (!seg) return false;
+  // Pure numeric IDs (e.g. /customers/1042)
+  if (/^\d+$/.test(seg)) return true;
+  // Standard UUIDs
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return true;
+  // 24-char MongoDB ObjectIds or long hex hashes
+  if (/^[0-9a-f]{24,64}$/i.test(seg)) return true;
+  return false;
+}
+
 /**
- * Normalizes an endpoint for grouping purposes:
- * - strips pagination query params (page, offset, limit, cursor, etc.)
- * - normalizes host + pathname
+ * Normalizes an endpoint for clean API source grouping:
+ * - strips query parameters (page, offset, limit, cursor, etc.)
+ * - normalizes numeric/UUID/hex path IDs into `:id` so detail calls group cleanly
+ * - appends `#OperationName` for GraphQL / RPC endpoints so distinct queries stay separate
  */
-export function normalizeEndpoint(urlStr: string): string {
+export function normalizeEndpoint(urlStr: string, operationName?: string): string {
   try {
     const parsed = new URL(urlStr);
-    // Keep origin + pathname
-    let pathname = parsed.pathname;
-    // Remove trailing slash if longer than 1 character
+    const normalizedSegments = parsed.pathname
+      .split('/')
+      .map((seg) => (isDynamicIdSegment(seg) ? ':id' : seg));
+
+    let pathname = normalizedSegments.join('/');
     if (pathname.length > 1 && pathname.endsWith('/')) {
       pathname = pathname.slice(0, -1);
     }
 
-    return `${parsed.origin}${pathname}`;
+    const base = `${parsed.origin}${pathname}`;
+    if (operationName && operationName.trim().length > 0) {
+      return `${base}#${operationName.trim()}`;
+    }
+    return base;
   } catch {
-    // Fallback if relative or abnormal
     const withoutQuery = urlStr.split('?')[0].split('#')[0];
-    return withoutQuery;
+    return operationName ? `${withoutQuery}#${operationName.trim()}` : withoutQuery;
   }
+}
+
+/**
+ * Extracts a GraphQL or RPC operation name from URL query params or request POST payload.
+ * Never reads headers or cookies.
+ */
+export function extractOperationName(urlStr: string, requestPostData?: string): string | undefined {
+  try {
+    const parsed = new URL(urlStr);
+    const queryOp =
+      parsed.searchParams.get('operationName') ||
+      parsed.searchParams.get('operation') ||
+      parsed.searchParams.get('op');
+    if (queryOp && queryOp.trim()) {
+      return queryOp.trim();
+    }
+  } catch {
+    // Ignore invalid URL
+  }
+
+  if (requestPostData && requestPostData.trim().startsWith('{')) {
+    try {
+      const body = JSON.parse(requestPostData);
+      if (typeof body.operationName === 'string' && body.operationName.trim()) {
+        return body.operationName.trim();
+      }
+      // Fallback: parse `query GetCustomers(...)` from GraphQL query string
+      if (typeof body.query === 'string') {
+        const match = body.query.match(/\b(?:query|mutation)\s+([A-Za-z0-9_]+)/);
+        if (match?.[1]) {
+          return match[1];
+        }
+      }
+    } catch {
+      // Ignore non-JSON postData
+    }
+  }
+
+  return undefined;
 }
 
 function isLikelySensitiveKey(key: string): boolean {

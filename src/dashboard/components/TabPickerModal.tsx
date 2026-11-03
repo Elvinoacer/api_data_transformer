@@ -1,16 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { tabManager, TabInfo } from '../../background/tab-manager';
-import { X, Globe, ExternalLink, ShieldAlert, Check } from 'lucide-react';
+import { ScopeMode } from '../../shared/types';
+import { ModalDialog } from './ModalDialog';
+import { Globe, ExternalLink, ShieldCheck, Check, RefreshCw, Sparkles } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  onSelectTab: (tabId: number, url: string, allowedHostnames: string[]) => void;
+  onSelectTab: (
+    tabId: number,
+    url: string,
+    allowedHostnames: string[],
+    scopeMode: ScopeMode,
+    sessionLabel?: string
+  ) => void;
 }
 
 export const TabPickerModal: React.FC<Props> = ({ isOpen, onClose, onSelectTab }) => {
   const [tabs, setTabs] = useState<TabInfo[]>([]);
   const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
+  const [scopeMode, setScopeMode] = useState<ScopeMode>('all_tab_apis');
+  const [sessionLabel, setSessionLabel] = useState('');
   const [customUrl, setCustomUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -28,42 +38,55 @@ export const TabPickerModal: React.FC<Props> = ({ isOpen, onClose, onSelectTab }
       if (typeof chrome !== 'undefined' && chrome.tabs) {
         const selectable = await tabManager.getSelectableTabs();
         setTabs(selectable);
-        if (selectable.length > 0 && selectedTabId === null) {
-          setSelectedTabId(selectable[0].id);
+        if (selectable.length > 0) {
+          const initial = selectable.find((t) => t.id === selectedTabId) || selectable[0];
+          setSelectedTabId(initial.id);
+          if (!sessionLabel) {
+            setSessionLabel(initial.title?.slice(0, 40) || `${initial.hostname} capture`);
+          }
         }
       } else {
-        // Fallback demo mock
-        setTabs([
-          {
-            id: 101,
-            title: 'Medication Catalog — Live API Demo Target',
-            url: 'http://localhost:5173/demo.html',
-            hostname: 'localhost',
-          },
-        ]);
+        const demoTab: TabInfo = {
+          id: 101,
+          title: 'Multi-API Catalog Sandbox — Live Demo Target',
+          url: 'http://localhost:5173/demo.html',
+          hostname: 'localhost',
+        };
+        setTabs([demoTab]);
         setSelectedTabId(101);
+        if (!sessionLabel) setSessionLabel('Demo Multi-API Catalog');
       }
     } catch (err: any) {
-      setError(err.message || 'Could not load open tabs');
+      setError(err.message || 'Could not load open browser tabs');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleSelectRow = (tab: TabInfo) => {
+    setSelectedTabId(tab.id);
+    setSessionLabel(tab.title?.slice(0, 42) || `${tab.hostname} capture`);
+  };
+
   const handleOpenNewTab = async () => {
-    if (!customUrl) return;
+    if (!customUrl.trim()) return;
+    setError('');
     try {
-      let formatted = customUrl;
-      if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
+      let formatted = customUrl.trim();
+      if (formatted.startsWith('/')) {
+        formatted = `${window.location.origin}${formatted}`;
+      } else if (!formatted.startsWith('http://') && !formatted.startsWith('https://')) {
         formatted = `https://${formatted}`;
       }
       const newTab = await tabManager.openWebsiteInNewTab(formatted);
       if (newTab) {
         await loadTabs();
         setSelectedTabId(newTab.id);
+        setSessionLabel(`${newTab.hostname} capture`);
+        setCustomUrl('');
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to open new tab');
+      setError(err.message || 'Failed to open URL in new tab');
     }
   };
 
@@ -72,138 +95,213 @@ export const TabPickerModal: React.FC<Props> = ({ isOpen, onClose, onSelectTab }
     if (!selected) return;
 
     const allowed = [selected.hostname];
-    onSelectTab(selected.id, selected.url, allowed);
+    onSelectTab(
+      selected.id,
+      selected.url,
+      allowed,
+      scopeMode,
+      sessionLabel.trim() || `${selected.hostname} capture`
+    );
     onClose();
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-2xl overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-          <div>
-            <h3 className="font-bold text-slate-800 text-lg">Select Browser Tab to Capture</h3>
-            <p className="text-xs text-slate-500">
-              Choose an open website tab. The extension will observe JSON responses in that tab.
-            </p>
-          </div>
+    <ModalDialog
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Start Live API Capture Session"
+      subtitle="Select the website tab you want to observe. You browse normally while JSON API responses are extracted and labeled."
+      maxWidthClass="max-w-2xl"
+      headerActions={
+        <button
+          type="button"
+          onClick={loadTabs}
+          aria-label="Refresh open browser tabs"
+          className="p-1.5 text-stone-500 hover:text-obsidian-900 rounded-lg hover:bg-stone-200/60 transition"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+        </button>
+      }
+      footer={
+        <>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Security Notice */}
-        {error && (
-          <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
-            {error}
-          </div>
-        )}
-        <div className="mx-6 mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex gap-3 text-xs text-amber-800">
-          <ShieldAlert className="w-5 h-5 text-amber-600 flex-shrink-0" />
-          <div>
-            <p className="font-semibold mb-0.5">Chrome Debugger Permission</p>
-            <p>
-              Attaching enables network observation only for the selected tab. Your session stays on your machine and credentials are not saved.
-            </p>
-          </div>
-        </div>
-
-        {/* Tabs List */}
-        <div className="p-6 space-y-4 max-h-[50vh] overflow-y-auto">
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
-              Open Website Tabs
-            </label>
-            {loading ? (
-              <div className="text-sm text-slate-500 py-4 text-center">Loading browser tabs...</div>
-            ) : tabs.length === 0 ? (
-              <div className="text-sm text-slate-500 py-4 text-center">
-                No eligible HTTP/HTTPS tabs found. Open a website or enter a URL below.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {tabs.map((tab) => {
-                  const isSelected = tab.id === selectedTabId;
-                  return (
-                    <div
-                      key={tab.id}
-                      onClick={() => setSelectedTabId(tab.id)}
-                      className={`p-3 rounded-lg border cursor-pointer flex items-center justify-between transition ${
-                        isSelected
-                          ? 'border-indigo-600 bg-indigo-50/50 shadow-sm'
-                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 truncate pr-4">
-                        <Globe className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-indigo-600' : 'text-slate-400'}`} />
-                        <div className="truncate">
-                          <p className={`text-sm font-medium truncate ${isSelected ? 'text-indigo-900' : 'text-slate-800'}`}>
-                            {tab.title}
-                          </p>
-                          <p className="text-xs text-slate-500 truncate font-mono">{tab.url}</p>
-                        </div>
-                      </div>
-                      <div className="flex-shrink-0">
-                        {isSelected && (
-                          <div className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center">
-                            <Check className="w-4 h-4" />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Open New URL input */}
-          <div className="pt-2 border-t border-slate-100">
-            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
-              Or Open Website in New Tab
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="https://example.com/catalog or /demo.html"
-                value={customUrl}
-                onChange={(e) => setCustomUrl(e.target.value)}
-                className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
-              />
-              <button
-                type="button"
-                onClick={handleOpenNewTab}
-                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5 transition"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                Open Tab
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 transition"
+            className="px-4 py-2 text-xs font-semibold text-stone-700 bg-white border border-stone-300 hover:bg-stone-50 rounded-xl transition"
           >
             Cancel
           </button>
           <button
+            type="button"
             disabled={!selectedTabId}
             onClick={handleConfirm}
-            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg shadow-sm transition"
+            className="btn-lime px-5 py-2 bg-brand-400 hover:bg-brand-300 disabled:opacity-50 text-obsidian-950 border border-brand-500 text-xs font-bold rounded-xl shadow-lime-glow transition"
           >
-            Start Capture
+            Attach & Start Capture
           </button>
+        </>
+      }
+    >
+      <div className="p-6 space-y-5">
+        {error && (
+          <div role="alert" className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 font-medium">
+            {error}
+          </div>
+        )}
+
+        {/* Privacy & Local-First Assurance */}
+        <div className="p-3.5 bg-brand-50/70 border border-brand-200 rounded-xl flex gap-3 text-xs text-brand-950">
+          <ShieldCheck className="w-5 h-5 text-brand-700 flex-shrink-0 mt-0.5" aria-hidden="true" />
+          <div>
+            <p className="font-bold mb-0.5">Local-First Tab Observation</p>
+            <p className="text-stone-700 leading-relaxed">
+              Observes JSON API responses only from the single tab you select. Passwords, cookies, and Authorization headers are never read or uploaded.
+            </p>
+          </div>
+        </div>
+
+        {/* 1. Open Browser Tabs */}
+        <div>
+          <span className="block text-xs font-bold text-obsidian-900 mb-2">
+            1. Choose Open Browser Tab ({tabs.length})
+          </span>
+          {loading ? (
+            <div className="text-xs text-stone-500 py-6 text-center bg-stone-50 rounded-xl border border-stone-200">
+              Scanning open HTTP/HTTPS tabs...
+            </div>
+          ) : tabs.length === 0 ? (
+            <div className="text-xs text-stone-500 py-6 text-center bg-stone-50 rounded-xl border border-stone-200">
+              No HTTP/HTTPS tabs open yet. Open a target website below to begin.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+              {tabs.map((tab) => {
+                const isSelected = tab.id === selectedTabId;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => handleSelectRow(tab)}
+                    aria-pressed={isSelected}
+                    className={`w-full text-left p-3 rounded-xl border flex items-center justify-between transition ${
+                      isSelected
+                        ? 'border-brand-600 bg-brand-50/80 ring-1 ring-brand-600 shadow-xs'
+                        : 'border-stone-200 hover:border-stone-300 hover:bg-stone-50 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0 pr-3">
+                      {tab.favIconUrl ? (
+                        <img src={tab.favIconUrl} alt="" className="w-4 h-4 rounded-sm flex-shrink-0" />
+                      ) : (
+                        <Globe
+                          className={`w-4 h-4 flex-shrink-0 ${
+                            isSelected ? 'text-brand-700' : 'text-stone-400'
+                          }`}
+                          aria-hidden="true"
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-obsidian-900 truncate">
+                          {tab.title}
+                        </p>
+                        <p className="text-[11px] text-stone-500 truncate font-mono">{tab.url}</p>
+                      </div>
+                    </div>
+                    <div className="flex-shrink-0">
+                      {isSelected && (
+                        <span className="w-5 h-5 rounded-full bg-brand-500 text-obsidian-950 flex items-center justify-center">
+                          <Check className="w-3.5 h-3.5 stroke-[2.5]" aria-hidden="true" />
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 2. API Detection Scope & Session Label */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-stone-100">
+          <div>
+            <label
+              htmlFor="session-scope-select"
+              className="block text-xs font-bold text-obsidian-900 mb-1"
+            >
+              2. API Host Scope
+            </label>
+            <select
+              id="session-scope-select"
+              value={scopeMode}
+              onChange={(e) => setScopeMode(e.target.value as ScopeMode)}
+              className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-semibold text-obsidian-900"
+            >
+              <option value="all_tab_apis">
+                All JSON APIs Called by Tab (Recommended)
+              </option>
+              <option value="same_domain">
+                Same Root Domain & Subdomains (e.g. api.*)
+              </option>
+              <option value="selected_hosts">Strict Tab Hostname Only</option>
+            </select>
+            <p className="text-[11px] text-stone-500 mt-1 flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-brand-700 flex-shrink-0" aria-hidden="true" />
+              Captures cross-domain API backends while blocking analytics noise.
+            </p>
+          </div>
+
+          <div>
+            <label
+              htmlFor="session-custom-label"
+              className="block text-xs font-bold text-obsidian-900 mb-1"
+            >
+              3. Session Label
+            </label>
+            <input
+              id="session-custom-label"
+              type="text"
+              value={sessionLabel}
+              onChange={(e) => setSessionLabel(e.target.value)}
+              placeholder="e.g. Pharmacy Inventory & Customers"
+              className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-medium text-obsidian-900 focus:bg-white"
+            />
+          </div>
+        </div>
+
+        {/* 3. Open New URL Helper */}
+        <div className="pt-2 border-t border-stone-100">
+          <label
+            htmlFor="open-new-tab-url"
+            className="block text-xs font-bold text-obsidian-900 mb-1.5"
+          >
+            Or Open a Website URL in a New Tab
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="open-new-tab-url"
+              type="text"
+              placeholder="https://example.com/catalog or /demo.html"
+              value={customUrl}
+              onChange={(e) => setCustomUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleOpenNewTab();
+                }
+              }}
+              className="flex-1 px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-mono text-obsidian-900 focus:bg-white"
+            />
+            <button
+              type="button"
+              onClick={handleOpenNewTab}
+              className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-obsidian-900 border border-stone-300 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 transition"
+            >
+              <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+              Open Tab
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </ModalDialog>
   );
 };

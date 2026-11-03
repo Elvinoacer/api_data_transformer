@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { X, Copy, Check } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Copy, Check, Search } from 'lucide-react';
+import { ModalDialog } from './ModalDialog';
 
 interface Props {
   title: string;
@@ -10,46 +11,76 @@ interface Props {
 
 export const JsonViewerModal: React.FC<Props> = ({ title, data, isOpen, onClose }) => {
   const [copied, setCopied] = useState(false);
+  const [filterQuery, setFilterQuery] = useState('');
 
-  if (!isOpen) return null;
+  const formattedJson = useMemo(() => {
+    if (typeof data === 'string') {
+      try {
+        return JSON.stringify(JSON.parse(data), null, 2);
+      } catch {
+        return data;
+      }
+    }
+    return JSON.stringify(data, null, 2);
+  }, [data]);
 
-  const jsonString =
-    typeof data === 'string'
-      ? data
-      : JSON.stringify(data, null, 2);
+  const displayedJson = useMemo(() => {
+    if (!filterQuery.trim()) return formattedJson;
+    const lower = filterQuery.toLowerCase();
+    const matchingLines = formattedJson
+      .split('\n')
+      .filter((line) => line.toLowerCase().includes(lower));
+    return matchingLines.length > 0
+      ? matchingLines.join('\n')
+      : `// No JSON lines matched "${filterQuery}"`;
+  }, [formattedJson, filterQuery]);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(jsonString);
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(formattedJson);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in duration-150">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-          <h3 className="font-semibold text-slate-800 truncate pr-4">{title}</h3>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? 'Copied' : 'Copy JSON'}
-            </button>
-            <button
-              onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+    <ModalDialog
+      isOpen={isOpen}
+      onClose={onClose}
+      title={title}
+      maxWidthClass="max-w-4xl"
+      headerActions={
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-stone-300 rounded-xl text-xs font-semibold text-obsidian-900 hover:bg-stone-50 transition"
+        >
+          {copied ? (
+            <Check className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" />
+          ) : (
+            <Copy className="w-3.5 h-3.5 text-stone-600" aria-hidden="true" />
+          )}
+          {copied ? 'Copied JSON' : 'Copy JSON'}
+        </button>
+      }
+    >
+      <div className="bg-obsidian-950 text-stone-200 flex flex-col">
+        <div className="px-4 py-2.5 border-b border-obsidian-800 flex items-center gap-2 bg-obsidian-900">
+          <Search className="w-3.5 h-3.5 text-brand-400" aria-hidden="true" />
+          <label htmlFor="json-viewer-search" className="visually-hidden">
+            Filter JSON lines
+          </label>
+          <input
+            id="json-viewer-search"
+            type="text"
+            placeholder="Filter keys or values inside JSON..."
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            className="w-full bg-transparent text-xs font-mono text-stone-100 placeholder:text-stone-500 focus:outline-none"
+          />
         </div>
-
-        <div className="p-6 overflow-auto flex-1 bg-slate-950 font-mono text-xs text-slate-200">
-          <pre className="whitespace-pre-wrap">{jsonString}</pre>
+        <div className="p-5 overflow-auto max-h-[65vh] font-mono text-xs leading-relaxed text-brand-100/95">
+          <pre className="whitespace-pre-wrap break-words">{displayedJson}</pre>
         </div>
       </div>
-    </div>
+    </ModalDialog>
   );
 };

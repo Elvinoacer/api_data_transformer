@@ -7,12 +7,15 @@ export type CaptureStatus =
   | 'detached'
   | 'error';
 
+export type ScopeMode = 'all_tab_apis' | 'same_domain' | 'selected_hosts';
+
 export interface CaptureSession {
   id: string;
   label: string;
   targetTabId: number | null;
   originalUrl: string;
   allowedHostnames: string[];
+  scopeMode?: ScopeMode;
   status: CaptureStatus;
   startedAt: string;
   endedAt?: string;
@@ -27,6 +30,36 @@ export type ParseStatus =
   | 'invalid_json'
   | 'excluded'
   | 'failed';
+
+export type PaginationStrategy = 'page' | 'offset' | 'cursor' | 'next_url' | 'none';
+
+export interface DetectedPagination {
+  strategy: PaginationStrategy;
+  currentPage?: number;
+  pageSize?: number;
+  totalPages?: number;
+  totalRecords?: number;
+  hasNextPage?: boolean;
+  nextCursor?: string | null;
+  nextUrl?: string | null;
+  pageParamName?: string;
+  limitParamName?: string;
+}
+
+export interface SourcePaginationState {
+  strategy: PaginationStrategy;
+  currentPage?: number;
+  pageSize?: number;
+  totalPages?: number;
+  totalRecords?: number;
+  hasNextPage?: boolean;
+  nextCursor?: string | null;
+  nextUrl?: string | null;
+  pageParamName?: string;
+  limitParamName?: string;
+  observedPages: number[];
+  sampleRequestUrl?: string;
+}
 
 export interface RawResponse {
   id: string;
@@ -43,6 +76,8 @@ export interface RawResponse {
   responseBytes: number;
   contentHash?: string;
   operationName?: string;
+  extractedCount?: number;
+  paginationMeta?: DetectedPagination;
   errorMessage?: string;
 }
 
@@ -61,17 +96,20 @@ export interface ExtractedRecord {
 }
 
 export interface EndpointSource {
-  id: string; // usually normalized endpoint or UUID
+  id: string; // normalized endpoint key per session
   sessionId: string;
+  label: string; // human-friendly dataset label, e.g. "Medicines", "Customers"
+  customLabel?: boolean; // true when explicitly edited by user
   normalizedEndpoint: string;
   httpMethod: string;
   operationName?: string;
   included: boolean;
-  recordPath: string; // e.g. "root", "data", "results", "data.items", or custom
+  recordPath: string; // e.g. "root", "data", "results", "data.items", "single_object", or custom
   identityKeyField: string; // e.g. "id", "sku", "_id", or "__hash__"
   consolidationPolicy: ConsolidationPolicy;
   observedCount: number;
   lastObservedAt: string;
+  pagination?: SourcePaginationState;
 }
 
 export interface SchemaField {
@@ -101,6 +139,24 @@ export interface CaptureError {
   details?: unknown;
 }
 
+export interface ActivityEvent {
+  id: string;
+  sessionId: string;
+  timestamp: string;
+  actor: 'system' | 'user';
+  category:
+    | 'capture'
+    | 'discovery'
+    | 'pagination'
+    | 'extraction'
+    | 'export'
+    | 'session'
+    | 'config'
+    | 'warning';
+  message: string;
+  detail?: string;
+}
+
 export interface SessionMetrics {
   responsesObserved: number;
   responsesSaved: number;
@@ -109,6 +165,32 @@ export interface SessionMetrics {
   uniqueRecords: number;
   endpointGroups: number;
   bytesStored: number;
+}
+
+export type AutoPaginateMode = 'dom_click' | 'api_fetch' | 'scroll';
+
+export interface AutoPaginateConfig {
+  sessionId: string;
+  sourceId?: string;
+  mode: AutoPaginateMode;
+  delayMs: number;
+  maxPages: number;
+  customSelector?: string;
+  startPage?: number;
+  endPage?: number;
+}
+
+export interface AutoPaginateState {
+  status: 'idle' | 'running' | 'stopping' | 'completed' | 'error';
+  mode?: AutoPaginateMode;
+  sourceId?: string;
+  pagesAttempted: number;
+  maxPages: number;
+  initialUniqueRecords: number;
+  currentUniqueRecords: number;
+  message: string;
+  startedAt?: string;
+  updatedAt?: string;
 }
 
 export interface RedactionRule {
@@ -123,4 +205,5 @@ export interface GlobalSettings {
   sensitiveUrlParams: string[];
   sensitiveEndpointKeywords: string[];
   autoExtractCommonPaths: boolean;
+  defaultScopeMode?: ScopeMode;
 }

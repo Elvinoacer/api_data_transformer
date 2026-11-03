@@ -1,4 +1,4 @@
-import { collectUniqueColumns, flattenObject } from '../extraction/flatten';
+import { collectUniqueColumns, flattenObject, formatColumnHeader } from '../extraction/flatten';
 import { sanitizeForFormulaInjection } from './sanitize';
 
 export interface CsvExportOptions {
@@ -6,6 +6,8 @@ export interface CsvExportOptions {
   defendFormulaInjection?: boolean;
   nullValueRepresentation?: '' | 'null';
   columns?: string[];
+  arrayFormat?: 'json' | 'readable';
+  headerStyle?: 'dot' | 'readable';
 }
 
 /**
@@ -55,20 +57,34 @@ export function generateFlattenedCsv(
     return options.includeBom ? '\uFEFF' : '';
   }
 
+  const { arrayFormat = 'json', headerStyle = 'dot' } = options;
+
   // Flatten every item
   const flattenedRecords = items.map((item) =>
-    typeof item === 'object' && item !== null ? flattenObject(item) : { value: item }
+    typeof item === 'object' && item !== null
+      ? flattenObject(item, '', {}, { arrayFormat })
+      : { value: item }
   );
 
   // Compute column list
-  const columns = options.columns && options.columns.length > 0
-    ? options.columns
-    : collectUniqueColumns(flattenedRecords);
+  const columns =
+    options.columns && options.columns.length > 0
+      ? options.columns
+      : collectUniqueColumns(flattenedRecords);
 
   const lines: string[] = [];
 
   // Header line
-  lines.push(columns.map((c) => formatCsvCell(c, { ...options, defendFormulaInjection: false })).join(','));
+  lines.push(
+    columns
+      .map((c) =>
+        formatCsvCell(formatColumnHeader(c, headerStyle), {
+          ...options,
+          defendFormulaInjection: false,
+        })
+      )
+      .join(',')
+  );
 
   // Data lines
   for (const record of flattenedRecords) {
@@ -84,24 +100,35 @@ export function generateFlattenedCsv(
 }
 
 /**
- * Converts raw responses or records into a CSV with metadata + raw JSON column.
+ * Converts raw responses or records into a CSV with metadata + dataset label + raw JSON column.
  */
 export function generateRawRecordCsv(
-  records: { id: string; capturedAt?: string; source?: string; rawRecord: unknown }[],
+  records: { id: string; capturedAt?: string; source?: string; label?: string; rawRecord: unknown }[],
   options: CsvExportOptions = {}
 ): string {
-  const headers = ['id', 'capturedAt', 'source', 'raw_json'];
+  const hasLabel = records.some((r) => Boolean(r.label));
+  const headers = hasLabel
+    ? ['id', 'dataset', 'capturedAt', 'source', 'raw_json']
+    : ['id', 'capturedAt', 'source', 'raw_json'];
   const lines: string[] = [];
 
   lines.push(headers.map((h) => formatCsvCell(h, { ...options, defendFormulaInjection: false })).join(','));
 
   for (const r of records) {
-    const row = [
-      formatCsvCell(r.id, options),
-      formatCsvCell(r.capturedAt || '', options),
-      formatCsvCell(r.source || '', options),
-      formatCsvCell(JSON.stringify(r.rawRecord), options),
-    ];
+    const row = hasLabel
+      ? [
+          formatCsvCell(r.id, options),
+          formatCsvCell(r.label || '', options),
+          formatCsvCell(r.capturedAt || '', options),
+          formatCsvCell(r.source || '', options),
+          formatCsvCell(JSON.stringify(r.rawRecord), options),
+        ]
+      : [
+          formatCsvCell(r.id, options),
+          formatCsvCell(r.capturedAt || '', options),
+          formatCsvCell(r.source || '', options),
+          formatCsvCell(JSON.stringify(r.rawRecord), options),
+        ];
     lines.push(row.join(','));
   }
 

@@ -1,5 +1,9 @@
 import { captureController } from './capture-controller';
-import { ExtensionMessage, StartCapturePayload } from '../messaging/protocol';
+import {
+  ExtensionMessage,
+  StartAutoPaginatePayload,
+  StartCapturePayload,
+} from '../messaging/protocol';
 
 // Initialize state from IndexedDB when service worker boots up
 captureController.init().catch(console.error);
@@ -30,6 +34,9 @@ chrome.action.onClicked.addListener(async () => {
 
   if (existingTabs.length > 0 && existingTabs[0].id) {
     await chrome.tabs.update(existingTabs[0].id, { active: true });
+    if (existingTabs[0].windowId) {
+      await chrome.windows.update(existingTabs[0].windowId, { focused: true });
+    }
   } else {
     await chrome.tabs.create({ url: dashboardUrl });
   }
@@ -37,8 +44,24 @@ chrome.action.onClicked.addListener(async () => {
 
 // 5. Top-level Extension Messaging Listener
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
+  // Handle OPEN_SIDEPANEL synchronously before any `await` so Chrome preserves the user gesture
+  if (message.type === 'OPEN_SIDEPANEL' && sender.tab?.windowId) {
+    const openPromise = chrome.sidePanel.open({ windowId: sender.tab.windowId });
+    (async () => {
+      try {
+        await openPromise;
+        sendResponse({ success: true });
+      } catch (err: any) {
+        sendResponse({ success: false, error: err?.message || 'Could not open side panel' });
+      }
+    })();
+    return true;
+  }
+
   (async () => {
     try {
+      await captureController.init();
+
       switch (message.type) {
         case 'START_CAPTURE': {
           const payload = message.payload as StartCapturePayload;
@@ -71,7 +94,8 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         case 'GET_CAPTURE_STATE': {
           const activeSession = captureController.getActiveSession();
           const status = captureController.getStatus();
-          sendResponse({ success: true, data: { activeSession, status } });
+          const autoPaginate = captureController.getAutoPaginateState();
+          sendResponse({ success: true, data: { activeSession, status, autoPaginate } });
           break;
         }
 
@@ -82,11 +106,46 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
           break;
         }
 
+        case 'START_AUTO_PAGINATE': {
+          const payload = message.payload as StartAutoPaginatePayload;
+          const state = await captureController.startAutoPaginate(payload);
+          sendResponse({ success: true, data: state });
+          break;
+        }
+
+        case 'STOP_AUTO_PAGINATE': {
+          const state = await captureController.stopAutoPaginate();
+          sendResponse({ success: true, data: state });
+          break;
+        }
+
+        case 'GET_AUTO_PAGINATE_STATE': {
+          const state = captureController.getAutoPaginateState();
+          sendResponse({ success: true, data: state });
+          break;
+        }
+
+        case 'FOCUS_TARGET_TAB': {
+          const { tabId } = (message.payload as { tabId?: number }) || {};
+          const targetId = tabId || captureController.getActiveSession()?.targetTabId;
+          if (targetId) {
+            const tab = await chrome.tabs.update(targetId, { active: true });
+            if (tab?.windowId) {
+              await chrome.windows.update(tab.windowId, { focused: true });
+            }
+          }
+          sendResponse({ success: true });
+          break;
+        }
+
         case 'OPEN_DASHBOARD': {
           const dashboardUrl = chrome.runtime.getURL('dashboard.html');
           const existingTabs = await chrome.tabs.query({ url: dashboardUrl });
           if (existingTabs.length > 0 && existingTabs[0].id) {
             await chrome.tabs.update(existingTabs[0].id, { active: true });
+            if (existingTabs[0].windowId) {
+              await chrome.windows.update(existingTabs[0].windowId, { focused: true });
+            }
           } else {
             await chrome.tabs.create({ url: dashboardUrl });
           }
@@ -95,8 +154,11 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         }
 
         case 'OPEN_SIDEPANEL': {
-          if (sender.tab?.windowId) {
-            await (chrome as any).sidePanel.open({ windowId: sender.tab.windowId });
+          const winId =
+            sender.tab?.windowId ??
+            (await chrome.windows.getLastFocused()).id;
+          if (winId) {
+            await chrome.sidePanel.open({ windowId: winId });
           }
           sendResponse({ success: true });
           break;

@@ -1,27 +1,83 @@
 import { db } from './db';
 import {
+  ActivityEvent,
   CaptureError,
   CaptureSession,
   CaptureStatus,
+  DetectedPagination,
   EndpointSchema,
   EndpointSource,
   ExtractedRecord,
+  GlobalSettings,
   RawResponse,
+  ScopeMode,
   SessionMetrics,
 } from '../shared/types';
+import { DEFAULT_SETTINGS } from '../shared/constants';
 import { normalizeEndpoint } from '../privacy/url-redaction';
-import { inferBestRecordPath } from '../extraction/path-selector';
+import {
+  extractItemsByPath,
+  inferBestIdentityKey,
+  inferBestRecordPath,
+} from '../extraction/path-selector';
+import { inferDatasetLabel } from '../extraction/label-inference';
+import { mergePaginationState } from '../extraction/pagination-detector';
+
+const SETTINGS_STORAGE_KEY = 'lndc_global_settings_v1';
+
+export const settingsRepo = {
+  async getSettings(): Promise<GlobalSettings> {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
+        if (stored?.[SETTINGS_STORAGE_KEY]) {
+          return { ...DEFAULT_SETTINGS, ...stored[SETTINGS_STORAGE_KEY] };
+        }
+      } else if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+        if (raw) {
+          return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+        }
+      }
+    } catch {
+      // Fallback to defaults
+    }
+    return { ...DEFAULT_SETTINGS };
+  },
+
+  async saveSettings(updates: Partial<GlobalSettings>): Promise<GlobalSettings> {
+    const current = await this.getSettings();
+    const merged: GlobalSettings = { ...current, ...updates };
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: merged });
+      } else if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(merged));
+      }
+    } catch (err) {
+      console.warn('Could not persist settings:', err);
+    }
+    return merged;
+  },
+};
 
 export const sessionRepo = {
   async createSession(params: {
     targetTabId: number | null;
     originalUrl: string;
     allowedHostnames: string[];
+    scopeMode?: ScopeMode;
     label?: string;
   }): Promise<CaptureSession> {
     const id = `session_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const urlObj = new URL(params.originalUrl || 'http://localhost');
-    const label = params.label || `${urlObj.hostname} session`;
+    let hostLabel = 'Website';
+    try {
+      const urlObj = new URL(params.originalUrl || 'http://localhost');
+      hostLabel = urlObj.hostname;
+    } catch {
+      // Fallback
+    }
+    const label = params.label?.trim() || `${hostLabel} capture`;
 
     const session: CaptureSession = {
       id,
@@ -29,6 +85,7 @@ export const sessionRepo = {
       targetTabId: params.targetTabId,
       originalUrl: params.originalUrl,
       allowedHostnames: params.allowedHostnames,
+      scopeMode: params.scopeMode || 'all_tab_apis',
       status: 'starting',
       startedAt: new Date().toISOString(),
     };
@@ -39,11 +96,17 @@ export const sessionRepo = {
 
   async updateStatus(sessionId: string, status: CaptureStatus, reason?: string): Promise<void> {
     const updates: Partial<CaptureSession> = { status };
-    if (reason) updates.errorReason = reason;
+    if (reason !== undefined) updates.errorReason = reason;
     if (status === 'stopped' || status === 'detached') {
       updates.endedAt = new Date().toISOString();
     }
     await db.capture_sessions.update(sessionId, updates);
+  },
+
+  async renameSession(sessionId: string, label: string): Promise<void> {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    await db.capture_sessions.update(sessionId, { label: trimmed });
   },
 
   async getSession(sessionId: string): Promise<CaptureSession | undefined> {
@@ -71,6 +134,7 @@ export const sessionRepo = {
         db.sources,
         db.capture_errors,
         db.schemas,
+        db.activity_events,
       ],
       async () => {
         await db.capture_sessions.delete(sessionId);
@@ -79,6 +143,7 @@ export const sessionRepo = {
         await db.sources.where('sessionId').equals(sessionId).delete();
         await db.capture_errors.where('sessionId').equals(sessionId).delete();
         await db.schemas.where('sessionId').equals(sessionId).delete();
+        await db.activity_events.where('sessionId').equals(sessionId).delete();
       }
     );
   },
@@ -96,13 +161,10 @@ export const rawResponseRepo = {
     });
   },
 
-  async getBySession(sessionId: string, limit = 100): Promise<RawResponse[]> {
-    return db.raw_responses
-      .where('sessionId')
-      .equals(sessionId)
-      .reverse()
-      .limit(limit)
-      .toArray();
+  async getBySession(sessionId: string, limit = 150): Promise<RawResponse[]> {
+    const all = await db.raw_responses.where('sessionId').equals(sessionId).toArray();
+    all.sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
+    return all.slice(0, limit);
   },
 
   async getById(id: string): Promise<RawResponse | undefined> {
@@ -110,7 +172,9 @@ export const rawResponseRepo = {
   },
 
   async getAllBySession(sessionId: string): Promise<RawResponse[]> {
-    return db.raw_responses.where('sessionId').equals(sessionId).toArray();
+    const all = await db.raw_responses.where('sessionId').equals(sessionId).toArray();
+    all.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+    return all;
   },
 };
 
@@ -121,48 +185,110 @@ export const sourceRepo = {
     httpMethod: string;
     parsedBody?: unknown;
     operationName?: string;
-  }): Promise<EndpointSource> {
-    const normalized = normalizeEndpoint(params.url);
+    detectedPagination?: DetectedPagination;
+  }): Promise<{ source: EndpointSource; isNew: boolean }> {
+    const normalized = normalizeEndpoint(params.url, params.operationName);
     const id = `${params.sessionId}_${params.httpMethod}_${normalized}`;
 
     const existing = await db.sources.get(id);
     if (existing) {
       existing.observedCount += 1;
       existing.lastObservedAt = new Date().toISOString();
+      if (!existing.label) {
+        existing.label = inferDatasetLabel({
+          url: params.url,
+          operationName: params.operationName || existing.operationName,
+          recordPath: existing.recordPath,
+        });
+      }
+      if (params.detectedPagination) {
+        existing.pagination = mergePaginationState(
+          existing.pagination,
+          params.detectedPagination,
+          params.url
+        );
+      }
       await db.sources.put(existing);
-      return existing;
+      return { source: existing, isNew: false };
     }
 
-    // Infer default record path if sample body is provided
+    // Infer default record path & identity key if sample body is provided
     let recordPath = 'root';
+    let identityKeyField = 'id';
     if (params.parsedBody) {
       recordPath = inferBestRecordPath(params.parsedBody);
+      const sampleItems = extractItemsByPath(params.parsedBody, recordPath);
+      if (sampleItems.length > 0) {
+        identityKeyField = inferBestIdentityKey(sampleItems);
+      }
     }
+
+    // Infer clear semantic dataset label (e.g. "Medicines", "Customers", "Orders")
+    let baseLabel = inferDatasetLabel({
+      url: params.url,
+      operationName: params.operationName,
+      recordPath,
+    });
+
+    // Disambiguate if another source in the same session already has this exact label
+    const siblingSources = await db.sources.where('sessionId').equals(params.sessionId).toArray();
+    const existingLabels = new Set(siblingSources.map((s) => (s.label || '').toLowerCase()));
+    if (existingLabels.has(baseLabel.toLowerCase())) {
+      const suffix = params.url.includes('cursor')
+        ? 'Cursor'
+        : params.httpMethod !== 'GET'
+        ? params.httpMethod
+        : `${siblingSources.length + 1}`;
+      baseLabel = `${baseLabel} (${suffix})`;
+    }
+
+    const pagination = params.detectedPagination
+      ? mergePaginationState(undefined, params.detectedPagination, params.url)
+      : undefined;
 
     const newSource: EndpointSource = {
       id,
       sessionId: params.sessionId,
+      label: baseLabel,
       normalizedEndpoint: normalized,
       httpMethod: params.httpMethod,
       operationName: params.operationName,
       included: true,
       recordPath,
-      identityKeyField: 'id',
+      identityKeyField,
       consolidationPolicy: 'keep_latest',
       observedCount: 1,
       lastObservedAt: new Date().toISOString(),
+      pagination,
     };
 
     await db.sources.put(newSource);
-    return newSource;
+    return { source: newSource, isNew: true };
   },
 
   async updateSource(id: string, updates: Partial<EndpointSource>): Promise<void> {
     await db.sources.update(id, updates);
   },
 
+  async renameSource(id: string, label: string): Promise<void> {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    await db.sources.update(id, { label: trimmed, customLabel: true });
+  },
+
   async getSourcesBySession(sessionId: string): Promise<EndpointSource[]> {
-    return db.sources.where('sessionId').equals(sessionId).toArray();
+    const list = await db.sources.where('sessionId').equals(sessionId).toArray();
+    // Ensure backwards compatibility if older records lacked `label`
+    return list.map((s) => ({
+      ...s,
+      label:
+        s.label ||
+        inferDatasetLabel({
+          url: s.normalizedEndpoint,
+          operationName: s.operationName,
+          recordPath: s.recordPath,
+        }),
+    }));
   },
 
   async getSource(id: string): Promise<EndpointSource | undefined> {
@@ -238,12 +364,44 @@ export const errorRepo = {
   },
 
   async getErrorsBySession(sessionId: string, limit = 50): Promise<CaptureError[]> {
-    return db.capture_errors
-      .where('sessionId')
-      .equals(sessionId)
-      .reverse()
-      .limit(limit)
-      .toArray();
+    const all = await db.capture_errors.where('sessionId').equals(sessionId).toArray();
+    all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    return all.slice(0, limit);
+  },
+};
+
+export const activityRepo = {
+  async logEvent(params: {
+    sessionId: string;
+    actor: ActivityEvent['actor'];
+    category: ActivityEvent['category'];
+    message: string;
+    detail?: string;
+  }): Promise<void> {
+    try {
+      const event: ActivityEvent = {
+        id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        sessionId: params.sessionId,
+        timestamp: new Date().toISOString(),
+        actor: params.actor,
+        category: params.category,
+        message: params.message,
+        detail: params.detail,
+      };
+      await db.activity_events.put(event);
+    } catch {
+      // Non-critical telemetry/audit log
+    }
+  },
+
+  async getEventsBySession(sessionId: string, limit = 40): Promise<ActivityEvent[]> {
+    try {
+      const all = await db.activity_events.where('sessionId').equals(sessionId).toArray();
+      all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      return all.slice(0, limit);
+    } catch {
+      return [];
+    }
   },
 };
 
@@ -261,14 +419,18 @@ export async function calculateSessionMetrics(sessionId: string): Promise<Sessio
   ]);
 
   const responsesObserved = rawResponses.length;
-  const responsesSaved = rawResponses.filter((r) => r.parseStatus === 'parsed' || r.parseStatus === 'pending').length;
+  const responsesSaved = rawResponses.filter(
+    (r) => r.parseStatus === 'parsed' || r.parseStatus === 'pending'
+  ).length;
+
   let bytesStored = 0;
+  let totalExtractedItems = 0;
   for (const r of rawResponses) {
     bytesStored += r.responseBytes || 0;
+    totalExtractedItems += r.extractedCount || 0;
   }
 
-  // Count total parsed items before deduplication
-  const parsedRecords = uniqueRecords; // In MVP, uniqueRecords represents current materialized records
+  const parsedRecords = Math.max(totalExtractedItems, uniqueRecords);
 
   return {
     responsesObserved,

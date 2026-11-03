@@ -1,5 +1,6 @@
 import Dexie, { Table } from 'dexie';
 import {
+  ActivityEvent,
   CaptureError,
   CaptureSession,
   EndpointSchema,
@@ -15,6 +16,7 @@ export class CollectorDatabase extends Dexie {
   sources!: Table<EndpointSource, string>;
   capture_errors!: Table<CaptureError, string>;
   schemas!: Table<EndpointSchema, string>;
+  activity_events!: Table<ActivityEvent, string>;
 
   constructor() {
     super('LiveNetworkDataCollectorDB');
@@ -26,6 +28,16 @@ export class CollectorDatabase extends Dexie {
       sources: 'id, sessionId, normalizedEndpoint',
       capture_errors: 'id, sessionId, timestamp, kind',
       schemas: 'sourceId, sessionId, [sessionId+sourceId]',
+    });
+
+    this.version(2).stores({
+      capture_sessions: 'id, status, startedAt, originalUrl',
+      raw_responses: 'id, sessionId, capturedAt, normalizedEndpoint, parseStatus',
+      extracted_records: 'id, sessionId, sourceId, identityKey, [sessionId+sourceId+identityKey], extractedAt',
+      sources: 'id, sessionId, normalizedEndpoint, label',
+      capture_errors: 'id, sessionId, timestamp, kind',
+      schemas: 'sourceId, sessionId, [sessionId+sourceId]',
+      activity_events: 'id, sessionId, timestamp, actor, category',
     });
   }
 }
