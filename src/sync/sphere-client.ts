@@ -1,5 +1,8 @@
-import { SphereProductInput } from "../extraction/bandago-normalizer";
-import { SyncQueueManager, QueueStats } from "./sync-queue";
+import {
+  SphereProductInput,
+  SphereProductSyncItem,
+} from "../extraction/bandago-normalizer";
+import { SyncQueueManager, QueueStats, coalesceSyncItems } from "./sync-queue";
 
 export interface SyncConfig {
   endpointUrl: string;
@@ -149,8 +152,14 @@ export class SphereSyncClient {
         const ids = pendingItems.map((p) => p.id!).filter(Boolean);
         await SyncQueueManager.markSyncing(ids);
 
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+
         try {
-          const payloadItems = pendingItems.map((p) => p.payload);
+          const payloadItems = pendingItems.map(
+            (p) => p.payload as SphereProductSyncItem,
+          );
+          const coalescedItems = coalesceSyncItems(payloadItems);
 
           const response = await fetch(config.endpointUrl, {
             method: "POST",
@@ -159,11 +168,12 @@ export class SphereSyncClient {
               Authorization: `Bearer ${config.apiKey}`,
               "X-Pharmacy-Source": "BANDAGO_POS",
             },
+            signal: controller.signal,
             body: JSON.stringify({
               source: "BANDAGO_POS",
               pharmacyId: config.pharmacyId,
               timestamp: new Date().toISOString(),
-              items: payloadItems,
+              items: coalescedItems,
             }),
           });
 
@@ -191,7 +201,10 @@ export class SphereSyncClient {
             break;
           }
         } catch (err: any) {
-          const errorMessage = err?.message || "Unknown network error";
+          const errorMessage =
+            err?.name === "AbortError"
+              ? "Sphere sync request timed out after 15 seconds"
+              : err?.message || "Unknown network error";
           console.error(
             "[SphereSyncClient] Sync transmission failed:",
             errorMessage,
@@ -214,6 +227,8 @@ export class SphereSyncClient {
             failed: pendingItems.length,
             error: errorMessage,
           };
+        } finally {
+          clearTimeout(timeoutId);
         }
       }
 
@@ -233,6 +248,9 @@ export class SphereSyncClient {
       return { ok: false, error: "Endpoint URL and API Key are required" };
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
     try {
       const response = await fetch(config.endpointUrl, {
         method: "POST",
@@ -241,6 +259,7 @@ export class SphereSyncClient {
           Authorization: `Bearer ${config.apiKey}`,
           "X-Pharmacy-Source": "BANDAGO_POS",
         },
+        signal: controller.signal,
         body: JSON.stringify({
           source: "BANDAGO_POS",
           pharmacyId: config.pharmacyId || "TEST_PING",
@@ -268,7 +287,13 @@ export class SphereSyncClient {
 
       return { ok: true, status: response.status };
     } catch (err: any) {
-      return { ok: false, error: err.message || "Connection test failed" };
+      const msg =
+        err?.name === "AbortError"
+          ? "Connection test timed out after 15 seconds"
+          : err.message || "Connection test failed";
+      return { ok: false, error: msg };
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

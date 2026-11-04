@@ -105,10 +105,36 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
     });
   };
 
+  const ensureOriginPermission = async (
+    endpointUrl: string,
+  ): Promise<boolean> => {
+    if (!endpointUrl) return true;
+    try {
+      if (typeof chrome !== "undefined" && chrome.permissions?.request) {
+        const parsed = new URL(endpointUrl);
+        const originPattern = `${parsed.origin}/*`;
+        const hasPerm = await chrome.permissions.contains({
+          origins: [originPattern],
+        });
+        if (!hasPerm) {
+          return await chrome.permissions.request({
+            origins: [originPattern],
+          });
+        }
+      }
+    } catch {
+      // Ignore if not a valid URL or not in extension environment
+    }
+    return true;
+  };
+
   const handleUpdateSphereConfig = async (
     updates: Partial<SyncConfig>,
     label: string,
   ) => {
+    if (updates.endpointUrl) {
+      await ensureOriginPermission(updates.endpointUrl);
+    }
     const updated = await SphereSyncClient.saveConfig(updates);
     setSphereConfig(updated);
     notify({
@@ -123,6 +149,7 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
     setTestingConnection(true);
     setTestResult(null);
     try {
+      await ensureOriginPermission(sphereConfig.endpointUrl);
       const res = await SphereSyncClient.testConnection(sphereConfig);
       if (res.ok) {
         setTestResult({
@@ -408,7 +435,7 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
             />
             <p className="text-[11px] text-stone-500 mt-1">
               The Next.js API route receiving normalized POS medication catalogs
-              and stock deltas.
+              and stock deltas. Supports custom domains, Vercel previews, or local self-hosted instances.
             </p>
           </div>
 

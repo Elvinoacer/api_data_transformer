@@ -1,5 +1,6 @@
 import { BandaGoNormalizer } from "../extraction/bandago-normalizer";
 import { SphereSyncClient } from "../sync/sphere-client";
+import { CdpNetworkAdapter } from "./cdp-adapter";
 
 export interface PollResult {
   success: boolean;
@@ -23,14 +24,19 @@ export class BandaGoActivePoller {
       if (typeof chrome !== "undefined" && chrome.alarms) {
         chrome.alarms.onAlarm.addListener((alarm) => {
           if (alarm.name === this.ALARM_NAME) {
-            this.pollActiveTabs().catch((err) => {
-              console.warn(
-                "[BandaGo Poller] Scheduled poll execution failed:",
-                err,
-              );
-            });
-            // Drain any pending items in offline sync queue
-            SphereSyncClient.flushQueue().catch(console.error);
+            (async () => {
+              try {
+                await this.pollActiveTabs();
+              } catch (err) {
+                console.warn(
+                  "[BandaGo Poller] Scheduled poll execution failed:",
+                  err,
+                );
+              } finally {
+                // Drain any pending items in offline sync queue after poll completes
+                SphereSyncClient.flushQueue().catch(console.error);
+              }
+            })();
           }
         });
 
@@ -86,6 +92,13 @@ export class BandaGoActivePoller {
     }
 
     const tabId = tabs[0].id;
+    const tabUrl = tabs[0].url || "https://go.bandahealth.org";
+    let origin = "https://go.bandahealth.org";
+    try {
+      origin = new URL(tabUrl).origin;
+    } catch {}
+
+    const cachedAuthHeader = await CdpNetworkAdapter.getAuthHeader(origin);
 
     const graphqlQuery = `
       query AutoSyncInventory {
@@ -110,23 +123,114 @@ export class BandaGoActivePoller {
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId },
-        func: async (queryStr: string) => {
+        func: async (
+          gqlEndpoint: string,
+          query: string,
+          cachedAuthHeader: string | null,
+        ) => {
           try {
-            const res = await fetch("/graphql", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ query: queryStr }),
-            });
-            if (!res.ok) {
-              const text = await res.text();
-              return { error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+            // Fallback: look for JWT token in localStorage/sessionStorage if CDP hasn't captured a header yet
+            let authHeader = cachedAuthHeader;
+            if (!authHeader) {
+              try {
+                for (const store of [
+                  window.localStorage,
+                  window.sessionStorage,
+                ]) {
+                  if (!store) continue;
+                  for (let i = 0; i < store.length; i++) {
+                    const key = store.key(i);
+                    const val = key ? store.getItem(key) : null;
+                    if (!val) continue;
+
+                    const trimmed = val.trim();
+                    let rawToken: string | null = null;
+
+                    if (
+                      /^"?eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+"?$/.test(
+                        trimmed,
+                      )
+                    ) {
+                      rawToken = trimmed.replace(/^"|"$/g, "");
+                    } else if (trimmed.startsWith("{")) {
+                      try {
+                        const obj = JSON.parse(trimmed);
+                        for (const k of [
+                          "token",
+                          "accessToken",
+                          "access_token",
+                          "jwt",
+                          "id_token",
+                          "idToken",
+                          "authToken",
+                        ]) {
+                          if (
+                            typeof obj[k] === "string" &&
+                            /^eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(
+                              obj[k],
+                            )
+                          ) {
+                            rawToken = obj[k];
+                            break;
+                          }
+                        }
+                      } catch {}
+                    }
+
+                    if (rawToken) {
+                      authHeader = `Bearer ${rawToken}`;
+                      break;
+                    }
+                  }
+                  if (authHeader) break;
+                }
+              } catch {}
             }
-            return await res.json();
+
+            if (authHeader && !authHeader.toLowerCase().startsWith("bearer ")) {
+              authHeader = `Bearer ${authHeader}`;
+            }
+
+            const headers: Record<string, string> = {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            };
+            if (authHeader) {
+              headers["Authorization"] = authHeader;
+            }
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+            try {
+              const res = await fetch(gqlEndpoint, {
+                method: "POST",
+                credentials: "include",
+                headers,
+                signal: controller.signal,
+                body: JSON.stringify({
+                  operationName: "SphereInventoryPoll",
+                  query,
+                }),
+              });
+              if (!res.ok) {
+                const text = await res.text();
+                return { error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+              }
+              return await res.json();
+            } finally {
+              clearTimeout(timeoutId);
+            }
           } catch (e: any) {
-            return { error: e.message || "Fetch failed" };
+            return {
+              error:
+                e?.name === "AbortError"
+                  ? "BandaGo in-tab fetch timed out after 15 seconds"
+                  : e.message || "Fetch failed",
+            };
           }
         },
-        args: [graphqlQuery],
+        args: ["/graphql", graphqlQuery, cachedAuthHeader],
       });
 
       const response = results[0]?.result;
@@ -162,19 +266,20 @@ export class BandaGoActivePoller {
       }
 
       const products = response?.data?.products;
-      if (Array.isArray(products) && products.length > 0) {
-        const normalized = products
-          .map(BandaGoNormalizer.normalize)
-          .filter((p): p is NonNullable<typeof p> => p !== null);
+      const normalized =
+        Array.isArray(products) && products.length > 0
+          ? products
+              .map(BandaGoNormalizer.normalize)
+              .filter((p): p is NonNullable<typeof p> => p !== null)
+          : BandaGoNormalizer.extractProductsFromPayload(response);
 
-        if (normalized.length > 0) {
-          await SphereSyncClient.enqueue(normalized);
-          return {
-            success: true,
-            count: normalized.length,
-            message: `Successfully captured and enqueued ${normalized.length} products from BandaGo`,
-          };
-        }
+      if (normalized.length > 0) {
+        await SphereSyncClient.enqueue(normalized);
+        return {
+          success: true,
+          count: normalized.length,
+          message: `Successfully captured and enqueued ${normalized.length} products from BandaGo`,
+        };
       }
 
       return {

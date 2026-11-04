@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SphereSyncClient } from "../../src/sync/sphere-client";
-import { SyncQueueManager } from "../../src/sync/sync-queue";
+import { SyncQueueManager, coalesceSyncItems } from "../../src/sync/sync-queue";
 import { db } from "../../src/data/db";
 
 describe("SphereSyncClient & SyncQueueManager", () => {
@@ -407,5 +407,130 @@ describe("SphereSyncClient & SyncQueueManager", () => {
     const [, r2] = await Promise.all([p1, p2]);
     // The second flush call immediately returns 0 due to concurrency guard
     expect(r2).toEqual({ synced: 0, failed: 0 });
+  });
+
+  it("coalesceSyncItems deduplicates by externalPosId, keeps newest state, and retains stock === 0", () => {
+    const rawItems: any[] = [
+      {
+        externalPosId: "pos-panadol",
+        name: "Panadol 500mg",
+        stock: 19,
+        price: 50,
+      },
+      {
+        externalPosId: "pos-amox",
+        name: "Amoxicillin 500mg",
+        stock: 5,
+        price: 250,
+      },
+      {
+        externalPosId: "pos-panadol",
+        name: "Panadol 500mg",
+        stock: 18,
+        price: 50,
+      },
+      {
+        externalPosId: "pos-panadol",
+        name: "Panadol 500mg",
+        stock: 17, // Latest dispense
+        price: 50,
+      },
+      {
+        externalPosId: "pos-depleted",
+        name: "Syrup 100ml",
+        stock: 0, // Out-of-stock must NOT be dropped!
+        price: 120,
+      },
+    ];
+
+    const coalesced = coalesceSyncItems(rawItems);
+    expect(coalesced).toHaveLength(3);
+
+    const panadol = coalesced.find((i) => i.externalPosId === "pos-panadol");
+    expect(panadol?.stock).toBe(17);
+
+    const amox = coalesced.find((i) => i.externalPosId === "pos-amox");
+    expect(amox?.stock).toBe(5);
+
+    const depleted = coalesced.find((i) => i.externalPosId === "pos-depleted");
+    expect(depleted?.stock).toBe(0);
+
+    expect(coalesceSyncItems(null as any)).toEqual([]);
+    expect(coalesceSyncItems(undefined as any)).toEqual([]);
+    expect(coalesceSyncItems([])).toEqual([]);
+  });
+
+  it("flushQueue coalesces pending items before transmitting payload to Sphere", async () => {
+    (global as any).chrome.storage.local.store = {
+      sphere_endpoint_url: "https://sphere.pharmacy/api/sync",
+      sphere_api_key: "test-key",
+      sphere_sync_enabled: true,
+      sphere_pharmacy_id: "BRANCH-01",
+    };
+
+    const mockPending = [
+      {
+        id: 1,
+        externalPosId: "med-1",
+        payload: { externalPosId: "med-1", name: "Drug A", stock: 10 },
+        status: "PENDING" as const,
+        retryCount: 0,
+        createdAt: 1000,
+        updatedAt: 1000,
+      },
+      {
+        id: 2,
+        externalPosId: "med-1",
+        payload: { externalPosId: "med-1", name: "Drug A", stock: 8 }, // newer dispense
+        status: "PENDING" as const,
+        retryCount: 0,
+        createdAt: 2000,
+        updatedAt: 2000,
+      },
+    ];
+
+    vi.spyOn(SyncQueueManager, "getPending")
+      .mockResolvedValueOnce(mockPending as any)
+      .mockResolvedValue([]);
+    vi.spyOn(SyncQueueManager, "markSyncing").mockResolvedValue();
+    const markSuccessSpy = vi
+      .spyOn(SyncQueueManager, "markSuccess")
+      .mockResolvedValue();
+
+    let capturedBody: any = null;
+    global.fetch = vi
+      .fn()
+      .mockImplementation(async (_url: string, opts: any) => {
+        capturedBody = JSON.parse(opts.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true }),
+        };
+      });
+
+    const result = await SphereSyncClient.flushQueue();
+    expect(result.synced).toBe(2);
+    expect(markSuccessSpy).toHaveBeenCalledWith([1, 2]);
+
+    // Transmitted items should have only 1 coalesced item with stock: 8
+    expect(capturedBody.items).toHaveLength(1);
+    expect(capturedBody.items[0].stock).toBe(8);
+  });
+
+  it("handles fetch AbortError timeout cleanly in flushQueue and testConnection", async () => {
+    const abortErr = new Error("The operation was aborted");
+    abortErr.name = "AbortError";
+
+    global.fetch = vi.fn().mockRejectedValue(abortErr);
+
+    const testRes = await SphereSyncClient.testConnection({
+      endpointUrl: "https://sphere.pharmacy/api/sync",
+      apiKey: "test-key",
+      enabled: true,
+    });
+
+    expect(testRes.ok).toBe(false);
+    expect(testRes.error).toContain("timed out after 15 seconds");
   });
 });

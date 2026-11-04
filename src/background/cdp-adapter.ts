@@ -32,9 +32,48 @@ export interface EmittedCdpResponse {
   postData?: string;
 }
 
+interface CachedPayload {
+  postData: string;
+  timestamp: number;
+}
+
 export class CdpNetworkAdapter {
-  private requestPayloadMap = new Map<string, string>();
+  private requestPayloadMap = new Map<string, CachedPayload>();
   private listeners: ((response: EmittedCdpResponse) => void)[] = [];
+  private static inMemoryAuthHeaders = new Map<string, string>();
+
+  /**
+   * Retrieves captured BandaGo Bearer Authorization token for origin.
+   */
+  static async getAuthHeader(
+    origin = "https://go.bandahealth.org",
+  ): Promise<string | null> {
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.session) {
+        const key = `bandago_auth_${origin}`;
+        const res = await chrome.storage.session.get([key]);
+        if (res && res[key]) return res[key];
+      }
+    } catch {}
+    return this.inMemoryAuthHeaders.get(origin) || null;
+  }
+
+  /**
+   * Caches BandaGo Bearer Authorization token for origin into chrome.storage.session.
+   */
+  static async setAuthHeader(
+    origin: string,
+    authHeader: string,
+  ): Promise<void> {
+    this.inMemoryAuthHeaders.set(origin, authHeader);
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.session) {
+        await chrome.storage.session.set({
+          [`bandago_auth_${origin}`]: authHeader,
+        });
+      }
+    } catch {}
+  }
 
   onResponse(listener: (response: EmittedCdpResponse) => void): () => void {
     this.listeners.push(listener);
@@ -48,17 +87,36 @@ export class CdpNetworkAdapter {
     method: string,
     params: any,
   ): void {
+    // TTL Eviction: clean up any pending entries older than 60s
+    this.pruneStale(60000);
+
     if (method === "Network.requestWillBeSent") {
       const { requestId, request } = params || {};
       if (requestId && request?.postData) {
-        this.requestPayloadMap.set(requestId, request.postData);
+        this.requestPayloadMap.set(requestId, {
+          postData: request.postData,
+          timestamp: Date.now(),
+        });
+      }
+
+      // Fix 2: Capture Authorization token on /graphql requests
+      const url = request?.url || "";
+      if (url.includes("/graphql")) {
+        const auth =
+          request?.headers?.Authorization || request?.headers?.authorization;
+        if (auth && typeof auth === "string") {
+          try {
+            const origin = new URL(url).origin;
+            CdpNetworkAdapter.setAuthHeader(origin, auth).catch(() => {});
+          } catch {}
+        }
       }
     }
 
     if (method === "Network.responseReceived") {
       const { requestId, response } = params || {};
       if (requestId && response) {
-        const postData = this.requestPayloadMap.get(requestId);
+        const postData = this.getRequestPayload(requestId);
         this.emitResponse({
           requestId,
           url: response.url || "",
@@ -74,7 +132,15 @@ export class CdpNetworkAdapter {
     if (method === "Network.loadingFinished") {
       const { requestId } = params || {};
       if (requestId) {
-        setTimeout(() => this.requestPayloadMap.delete(requestId), 30000);
+        this.requestPayloadMap.delete(requestId);
+      }
+    }
+
+    // Fix 5: Listen for Network.loadingFailed and immediately delete requestId
+    if (method === "Network.loadingFailed") {
+      const { requestId } = params || {};
+      if (requestId) {
+        this.requestPayloadMap.delete(requestId);
       }
     }
   }
@@ -90,7 +156,22 @@ export class CdpNetworkAdapter {
   }
 
   getRequestPayload(requestId: string): string | undefined {
-    return this.requestPayloadMap.get(requestId);
+    return this.requestPayloadMap.get(requestId)?.postData;
+  }
+
+  /**
+   * Prunes request payloads older than the TTL (default 60,000ms)
+   */
+  pruneStale(ttlMs = 60000): number {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [id, item] of this.requestPayloadMap.entries()) {
+      if (now - item.timestamp > ttlMs) {
+        this.requestPayloadMap.delete(id);
+        evicted++;
+      }
+    }
+    return evicted;
   }
 
   clear(): void {
@@ -306,5 +387,13 @@ export const cdpAdapter = {
     } catch {
       // Ignore if already detached
     }
+  },
+
+  async getAuthHeader(origin?: string): Promise<string | null> {
+    return CdpNetworkAdapter.getAuthHeader(origin);
+  },
+
+  async setAuthHeader(origin: string, auth: string): Promise<void> {
+    return CdpNetworkAdapter.setAuthHeader(origin, auth);
   },
 };

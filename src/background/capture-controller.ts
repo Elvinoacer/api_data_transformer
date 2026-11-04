@@ -344,6 +344,17 @@ class CaptureController {
               : undefined,
           timestamp: Date.now(),
         });
+
+        const url = req.url || "";
+        if (url.includes("/graphql")) {
+          const auth = req.headers?.Authorization || req.headers?.authorization;
+          if (auth && typeof auth === "string") {
+            try {
+              const origin = new URL(url).origin;
+              cdpAdapter.setAuthHeader(origin, auth).catch(() => {});
+            } catch {}
+          }
+        }
       }
       return;
     }
@@ -472,44 +483,101 @@ class CaptureController {
     }
 
     const parsed = parseResult.data;
-    await this.handleBandaGoPayload(pending.url, pending.postData, parsed);
-    const contentHash = generateStableContentHash(parsed);
-    const responseId = `resp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const redactedUrl = redactSensitiveUrl(
-      pending.url,
-      settings.sensitiveUrlParams,
-    );
 
-    const extraction = await this.extractAndConsolidate({
-      sessionId: this.currentSession.id,
-      responseId,
-      url: pending.url,
-      httpMethod: pending.httpMethod,
-      operationName,
-      requestBody: pending.postData,
-      parsedData: parsed,
-    });
+    // Fix 4: Support Batched Apollo GraphQL Responses (top-level arrays)
+    const envelopes =
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every(
+        (el) =>
+          el && typeof el === "object" && ("data" in el || "errors" in el),
+      )
+        ? parsed
+        : [parsed];
 
-    const rawResponse: RawResponse = {
-      id: responseId,
-      sessionId: this.currentSession.id,
-      capturedAt: new Date().toISOString(),
-      url: redactedUrl,
-      normalizedEndpoint: normalizeEndpoint(pending.url, operationName),
-      httpStatus: pending.httpStatus,
-      httpMethod: pending.httpMethod,
-      resourceType: pending.resourceType,
-      mimeType: pending.mimeType,
-      responseBody: bodyText,
-      parseStatus: "parsed",
-      responseBytes,
-      contentHash,
-      operationName,
-      extractedCount: extraction.extractedCount,
-      paginationMeta: extraction.paginationMeta,
-    };
+    // Attempt to match batched GraphQL request operations if pending.postData was an array
+    let postDataBatch: any[] | null = null;
+    if (pending.postData && pending.postData.trim().startsWith("[")) {
+      try {
+        const parsedPost = JSON.parse(pending.postData);
+        if (Array.isArray(parsedPost)) {
+          postDataBatch = parsedPost;
+        }
+      } catch {}
+    }
 
-    await rawResponseRepo.addResponse(rawResponse);
+    for (const [idx, envelope] of envelopes.entries()) {
+      await this.handleBandaGoPayload(pending.url, pending.postData, envelope);
+
+      let envelopeOpName = operationName;
+      let envelopePostData = pending.postData;
+
+      if (postDataBatch && postDataBatch[idx]) {
+        const opItem = postDataBatch[idx];
+        envelopePostData = JSON.stringify(opItem);
+        envelopeOpName =
+          opItem.operationName ||
+          (typeof opItem.query === "string"
+            ? opItem.query.match(/\b(?:query|mutation)\s+([A-Za-z0-9_]+)/)?.[1]
+            : undefined) ||
+          operationName;
+      }
+
+      if (
+        !envelopeOpName &&
+        envelope &&
+        typeof envelope === "object" &&
+        envelope.data &&
+        typeof envelope.data === "object"
+      ) {
+        const dataKeys = Object.keys(envelope.data);
+        if (dataKeys.length === 1) {
+          envelopeOpName = dataKeys[0];
+        }
+      }
+
+      const contentHash = generateStableContentHash(envelope);
+      const responseId = `resp_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+      const redactedUrl = redactSensitiveUrl(
+        pending.url,
+        settings.sensitiveUrlParams,
+      );
+
+      const extraction = await this.extractAndConsolidate({
+        sessionId: this.currentSession.id,
+        responseId,
+        url: pending.url,
+        httpMethod: pending.httpMethod,
+        operationName: envelopeOpName,
+        requestBody: envelopePostData,
+        parsedData: envelope,
+      });
+
+      const rawResponse: RawResponse = {
+        id: responseId,
+        sessionId: this.currentSession.id,
+        capturedAt: new Date().toISOString(),
+        url: redactedUrl,
+        normalizedEndpoint: normalizeEndpoint(pending.url, envelopeOpName),
+        httpStatus: pending.httpStatus,
+        httpMethod: pending.httpMethod,
+        resourceType: pending.resourceType,
+        mimeType: pending.mimeType,
+        responseBody:
+          envelopes.length === 1 ? bodyText : JSON.stringify(envelope),
+        parseStatus: "parsed",
+        responseBytes:
+          envelopes.length === 1
+            ? responseBytes
+            : new Blob([JSON.stringify(envelope)]).size,
+        contentHash,
+        operationName: envelopeOpName,
+        extractedCount: extraction.extractedCount,
+        paginationMeta: extraction.paginationMeta,
+      };
+
+      await rawResponseRepo.addResponse(rawResponse);
+    }
   }
 
   /**
@@ -1002,48 +1070,60 @@ class CaptureController {
       if (!parsedRes.ok) continue;
       const parsed = parsedRes.data;
 
-      const { source } = await sourceRepo.getOrCreateSource({
-        sessionId,
-        url: raw.url,
-        httpMethod: raw.httpMethod,
-        parsedBody: parsed,
-        operationName: raw.operationName,
-      });
+      const envelopes =
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every(
+          (el) =>
+            el && typeof el === "object" && ("data" in el || "errors" in el),
+        )
+          ? parsed
+          : [parsed];
 
-      const updatedSource = sourceMap.get(source.id) || source;
-      if (!updatedSource.included) continue;
+      for (const envelope of envelopes) {
+        const { source } = await sourceRepo.getOrCreateSource({
+          sessionId,
+          url: raw.url,
+          httpMethod: raw.httpMethod,
+          parsedBody: envelope,
+          operationName: raw.operationName,
+        });
 
-      const items = extractItemsByPath(parsed, updatedSource.recordPath);
-      if (!items || items.length === 0) continue;
+        const updatedSource = sourceMap.get(source.id) || source;
+        if (!updatedSource.included) continue;
 
-      const existingRecords = await recordRepo.getRecordsBySource(
-        sessionId,
-        updatedSource.id,
-      );
-      const consolidation = consolidateRecords({
-        sessionId,
-        sourceId: updatedSource.id,
-        responseId: raw.id,
-        rawItems: items,
-        existingRecords,
-        identityKeyField: updatedSource.identityKeyField,
-        policy: updatedSource.consolidationPolicy,
-      });
+        const items = extractItemsByPath(envelope, updatedSource.recordPath);
+        if (!items || items.length === 0) continue;
 
-      await recordRepo.upsertRecords(
-        consolidation.toInsert,
-        consolidation.toUpdate,
-      );
+        const existingRecords = await recordRepo.getRecordsBySource(
+          sessionId,
+          updatedSource.id,
+        );
+        const consolidation = consolidateRecords({
+          sessionId,
+          sourceId: updatedSource.id,
+          responseId: raw.id,
+          rawItems: items,
+          existingRecords,
+          identityKeyField: updatedSource.identityKeyField,
+          policy: updatedSource.consolidationPolicy,
+        });
 
-      const existingSchema = await schemaRepo.getSchema(updatedSource.id);
-      const updatedSchema = inferSchemaFromRecords({
-        sourceId: updatedSource.id,
-        sessionId,
-        inferredRecordPath: updatedSource.recordPath,
-        records: items,
-        existingSchema,
-      });
-      await schemaRepo.saveSchema(updatedSchema);
+        await recordRepo.upsertRecords(
+          consolidation.toInsert,
+          consolidation.toUpdate,
+        );
+
+        const existingSchema = await schemaRepo.getSchema(updatedSource.id);
+        const updatedSchema = inferSchemaFromRecords({
+          sourceId: updatedSource.id,
+          sessionId,
+          inferredRecordPath: updatedSource.recordPath,
+          records: items,
+          existingSchema,
+        });
+        await schemaRepo.saveSchema(updatedSchema);
+      }
     }
 
     const metrics = await calculateSessionMetrics(sessionId);
@@ -1058,12 +1138,12 @@ class CaptureController {
   private pruneStaleRequests(): void {
     const now = Date.now();
     for (const [key, req] of Array.from(this.pendingRequests.entries())) {
-      if (now - req.timestamp > 90_000) {
+      if (now - req.timestamp > 60_000) {
         this.pendingRequests.delete(key);
       }
     }
     for (const [key, meta] of Array.from(this.trackedRequests.entries())) {
-      if (now - meta.timestamp > 90_000) {
+      if (now - meta.timestamp > 60_000) {
         this.trackedRequests.delete(key);
       }
     }

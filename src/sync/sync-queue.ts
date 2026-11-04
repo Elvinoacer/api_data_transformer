@@ -1,11 +1,32 @@
 import { db, SyncQueueItem } from "../data/db";
-import { SphereProductInput } from "../extraction/bandago-normalizer";
+import {
+  SphereProductInput,
+  SphereProductSyncItem,
+} from "../extraction/bandago-normalizer";
 
 export interface QueueStats {
   pending: number;
   syncing: number;
   failed: number;
   total: number;
+}
+
+/**
+ * Deduplicates product items across pending queue jobs by externalPosId,
+ * preserving the latest state in chronological order.
+ * Items with stock === 0 are strictly retained so out-of-stock transitions reach Sphere.
+ */
+export function coalesceSyncItems(
+  items: SphereProductSyncItem[],
+): SphereProductSyncItem[] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const latestByPosId = new Map<string, SphereProductSyncItem>();
+  for (const item of items) {
+    if (!item || !item.externalPosId) continue;
+    // Later items in chronological order overwrite earlier states for the same externalPosId
+    latestByPosId.set(item.externalPosId, item);
+  }
+  return Array.from(latestByPosId.values());
 }
 
 export class SyncQueueManager {

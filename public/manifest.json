@@ -13,11 +13,7 @@
     "alarms",
     "scripting"
   ],
-  "host_permissions": [
-    "*://go.bandahealth.org/*",
-    "https://*/*",
-    "http://*/*"
-  ],
+  "host_permissions": ["<all_urls>"],
 
   "background": {
     "service_worker": "background.js",

@@ -349,4 +349,96 @@ describe("BandaGoNormalizer (FEFO & PPB Regulations)", () => {
     expect(slug).toBe("amoxicillin-500mg-uuid");
     expect(slug).not.toContain("--");
   });
+
+  it("preserves batches array for Sphere ProductBatch table with FEFO filtering and lot fallback", () => {
+    const now = Date.now();
+    const futureDate1 = new Date(now + 60 * 24 * 3600 * 1000).toISOString();
+    const futureDate2 = new Date(now + 120 * 24 * 3600 * 1000).toISOString();
+    const pastDate = new Date(now - 10 * 24 * 3600 * 1000).toISOString();
+
+    const raw = {
+      uu: "drug-lot-12345",
+      name: "Ciprofloxacin 500mg Film-Coated Tablets",
+      genericName: "Ciprofloxacin Hydrochloride",
+      dosageForm: "tablet",
+      bh_sellprice: 300,
+      bh_buyprice: 180,
+      storageOnHand: [
+        {
+          qtyOnHand: 50,
+          m_attributesetinstance: {
+            lot: "LOT-CIP-001",
+            guaranteeDate: futureDate1,
+          },
+        },
+        {
+          qtyOnHand: 30, // Missing lot, should get deterministic fallback LOT-drug-2
+          m_attributesetinstance: {
+            guaranteeDate: futureDate2,
+          },
+        },
+        {
+          qtyOnHand: 90, // Expired lot, must be excluded from batches!
+          m_attributesetinstance: {
+            lot: "LOT-EXPIRED",
+            guaranteeDate: pastDate,
+          },
+        },
+        {
+          qtyOnHand: 0, // Depleted lot, must be excluded
+          m_attributesetinstance: {
+            lot: "LOT-DEPLETED",
+            guaranteeDate: futureDate1,
+          },
+        },
+      ],
+    };
+
+    const normalized = BandaGoNormalizer.normalize(raw);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.genericName).toBe("Ciprofloxacin Hydrochloride");
+    expect(normalized?.dosageForm).toBe("tablet");
+    expect(normalized?.stock).toBe(80); // 50 + 30
+    expect(normalized?.batches).toHaveLength(2);
+    expect(normalized?.batches[0]).toEqual({
+      batchNumber: "LOT-CIP-001",
+      qtyOnHand: 50,
+      expiryDate: new Date(futureDate1).toISOString(),
+    });
+    expect(normalized?.batches[1]).toEqual({
+      batchNumber: "LOT-drug-2",
+      qtyOnHand: 30,
+      expiryDate: new Date(futureDate2).toISOString(),
+    });
+  });
+
+  it("preserves numeric lot 0 and handles empty string lot fallback correctly", () => {
+    const raw = {
+      uu: "drug-zero-lot",
+      name: "Ibuprofen 400mg Tablets",
+      buyPrice: 120,
+      storageOnHand: [
+        {
+          qtyOnHand: 20,
+          m_attributesetinstance: {
+            lot: 0, // Numeric 0 must be preserved as "0", not treated as falsy!
+          },
+        },
+        {
+          qtyOnHand: 15,
+          m_attributesetinstance: {
+            lot: "   ", // Whitespace lot must fall back to deterministic LOT ID
+          },
+        },
+      ],
+    };
+
+    const normalized = BandaGoNormalizer.normalize(raw);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.buyPrice).toBe(120);
+    expect(normalized?.costPrice).toBe(120);
+    expect(normalized?.batches).toHaveLength(2);
+    expect(normalized?.batches[0].batchNumber).toBe("0");
+    expect(normalized?.batches[1].batchNumber).toBe("LOT-drug-2");
+  });
 });

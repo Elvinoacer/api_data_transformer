@@ -94,23 +94,32 @@ export function extractOperationName(
     // Ignore invalid URL
   }
 
-  if (requestPostData && requestPostData.trim().startsWith("{")) {
-    try {
-      const body = JSON.parse(requestPostData);
-      if (typeof body.operationName === "string" && body.operationName.trim()) {
-        return body.operationName.trim();
-      }
-      // Fallback: parse `query GetCustomers(...)` from GraphQL query string
-      if (typeof body.query === "string") {
-        const match = body.query.match(
-          /\b(?:query|mutation)\s+([A-Za-z0-9_]+)/,
-        );
-        if (match?.[1]) {
-          return match[1];
+  if (requestPostData) {
+    const trimmed = requestPostData.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const body = JSON.parse(trimmed);
+        const item = Array.isArray(body) ? body[0] : body;
+        if (item && typeof item === "object") {
+          if (
+            typeof item.operationName === "string" &&
+            item.operationName.trim()
+          ) {
+            return item.operationName.trim();
+          }
+          // Fallback: parse `query GetCustomers(...)` from GraphQL query string
+          if (typeof item.query === "string") {
+            const match = item.query.match(
+              /\b(?:query|mutation)\s+([A-Za-z0-9_]+)/,
+            );
+            if (match?.[1]) {
+              return match[1];
+            }
+          }
         }
+      } catch {
+        // Ignore non-JSON postData
       }
-    } catch {
-      // Ignore non-JSON postData
     }
   }
 

@@ -4,24 +4,35 @@
  * prescription scheduling regulations, and standardized category taxonomy.
  */
 
-export interface SphereProductInput {
+export interface SphereBatchSyncItem {
+  batchNumber: string;
+  qtyOnHand: number;
+  expiryDate: string | null;
+}
+
+export interface SphereProductSyncItem {
   externalPosId: string;
   sku: string | null;
   name: string;
+  genericName: string | null;
+  dosageForm: string | null;
   slug: string;
   categorySlug: string;
   price: number;
+  buyPrice: number | null;
   costPrice: number | null;
   stock: number;
   inStock: boolean;
   requiresPrescription: boolean;
   imageUrl: string;
   nearestExpiryDate: string | null;
-  dosageForm?: string;
+  batches: SphereBatchSyncItem[];
   strength?: string;
   description?: string;
   packSize?: string;
 }
+
+export type SphereProductInput = SphereProductSyncItem;
 
 export interface CategoryMapping {
   slug: string;
@@ -238,6 +249,12 @@ export class BandaGoNormalizer {
       "QuantityOnHand" in r ||
       "storageOnHand" in r ||
       "M_StorageOnHand" in r ||
+      "batches" in r ||
+      "Batches" in r ||
+      "stock" in r ||
+      "Stock" in r ||
+      "price" in r ||
+      "Price" in r ||
       "m_product_category" in r ||
       "M_Product_Category" in r;
 
@@ -257,12 +274,30 @@ export class BandaGoNormalizer {
 
     if (!externalPosId || !name) return null;
 
+    const genericName =
+      raw.genericName ||
+      raw.generic_name ||
+      raw.GenericName ||
+      raw.bh_genericname ||
+      raw.BH_GenericName ||
+      raw.bh_generic_name ||
+      null;
+
     // Extract Strength and Form from drug title
     const strengthMatch = name.match(STRENGTH_REGEX);
-    const strength = strengthMatch ? strengthMatch[0] : undefined;
+    const strength =
+      raw.strength ||
+      raw.Strength ||
+      (strengthMatch ? strengthMatch[0] : undefined);
 
     const formMatch = name.match(DOSAGE_FORM_REGEX);
-    const dosageForm = formMatch ? formMatch[0].toLowerCase() : undefined;
+    const dosageForm =
+      raw.dosageForm ||
+      raw.dosage_form ||
+      raw.DosageForm ||
+      raw.bh_dosageform ||
+      (formMatch ? formMatch[0].toLowerCase() : null) ||
+      null;
 
     // Category Resolution
     const rawCategory = String(
@@ -298,31 +333,39 @@ export class BandaGoNormalizer {
     const now = Date.now();
     let validStock = 0;
     let nearestExpiryDate: string | null = null;
+    const normalizedBatches: SphereBatchSyncItem[] = [];
 
-    const batches = raw.storageOnHand || raw.M_StorageOnHand;
+    const batches =
+      raw.storageOnHand || raw.M_StorageOnHand || raw.batches || raw.Batches;
+
     if (Array.isArray(batches) && batches.length > 0) {
-      for (const batch of batches) {
+      for (const [idx, batch] of batches.entries()) {
         if (!batch || typeof batch !== "object") continue;
         const rawQty = batch.qtyOnHand ?? batch.QtyOnHand ?? 0;
-        const qty = Number(rawQty);
+        const qty = Math.floor(Number(rawQty));
         if (!Number.isFinite(qty) || qty <= 0) {
           // Zero, negative, or invalid inventory holds no sellable units and must not skew nearest expiry
           continue;
         }
 
+        const asi =
+          batch.m_attributesetinstance ||
+          batch.m_attributeSetInstance ||
+          batch.M_AttributeSetInstance ||
+          batch.attributeSetInstance ||
+          {};
+
         const expRaw =
-          batch.m_attributesetinstance?.guaranteeDate ||
-          batch.m_attributesetinstance?.GuaranteeDate ||
-          batch.M_AttributeSetInstance?.guaranteeDate ||
-          batch.M_AttributeSetInstance?.GuaranteeDate ||
-          batch.m_attributesetinstance?.expiryDate ||
-          batch.m_attributesetinstance?.ExpiryDate ||
-          batch.M_AttributeSetInstance?.expiryDate ||
-          batch.M_AttributeSetInstance?.ExpiryDate ||
-          batch.expiryDate ||
-          batch.ExpiryDate ||
+          asi.guaranteeDate ||
+          asi.GuaranteeDate ||
+          asi.expiryDate ||
+          asi.ExpiryDate ||
           batch.guaranteeDate ||
-          batch.GuaranteeDate;
+          batch.GuaranteeDate ||
+          batch.expiryDate ||
+          batch.ExpiryDate;
+
+        let expiryIso: string | null = null;
 
         if (expRaw) {
           const expTime = new Date(expRaw).getTime();
@@ -331,16 +374,37 @@ export class BandaGoNormalizer {
               // Expired stock is legally unsellable under Kenya PPB guidelines
               continue;
             }
+            expiryIso = new Date(expTime).toISOString();
             if (
               !nearestExpiryDate ||
               expTime < new Date(nearestExpiryDate).getTime()
             ) {
-              nearestExpiryDate = new Date(expTime).toISOString();
+              nearestExpiryDate = expiryIso;
             }
           }
         }
 
         validStock += qty;
+        const candidateLot =
+          asi.Lot ??
+          asi.lot ??
+          asi.SerNo ??
+          asi.serNo ??
+          batch.batchNumber ??
+          batch.BatchNumber;
+
+        const lotNo =
+          candidateLot !== undefined &&
+          candidateLot !== null &&
+          String(candidateLot).trim() !== ""
+            ? String(candidateLot).trim()
+            : `LOT-${externalPosId.slice(0, 4)}-${idx + 1}`;
+
+        normalizedBatches.push({
+          batchNumber: lotNo,
+          qtyOnHand: qty,
+          expiryDate: expiryIso,
+        });
       }
     } else {
       const rawStock = Number(
@@ -356,7 +420,13 @@ export class BandaGoNormalizer {
     const rawPrice = raw.bh_sellprice ?? raw.BH_SellPrice ?? raw.price ?? 0;
     const price = Math.max(0, Number(rawPrice) || 0);
 
-    const costPriceRaw = raw.bh_buyprice ?? raw.BH_BuyPrice ?? raw.costPrice;
+    const costPriceRaw =
+      raw.bh_buyprice ??
+      raw.BH_BuyPrice ??
+      raw.buyPrice ??
+      raw.BuyPrice ??
+      raw.costPrice ??
+      raw.CostPrice;
     const costPrice =
       costPriceRaw !== undefined && costPriceRaw !== null
         ? Math.max(0, Number(costPriceRaw) || 0)
@@ -374,16 +444,19 @@ export class BandaGoNormalizer {
       externalPosId,
       sku: raw.value || raw.Value || raw.sku || null,
       name,
+      genericName: genericName ? String(genericName).trim() : null,
+      dosageForm: dosageForm ? String(dosageForm).trim() : null,
       slug: generateSlug(name, externalPosId),
       categorySlug: resolvedCategory.slug,
       price: isNaN(price) ? 0 : price,
+      buyPrice: costPrice !== null && !isNaN(costPrice) ? costPrice : null,
       costPrice: costPrice !== null && !isNaN(costPrice) ? costPrice : null,
       stock: Math.max(0, Math.floor(validStock)),
       inStock: validStock > 0,
       requiresPrescription,
       imageUrl: resolvedCategory.defaultImage,
       nearestExpiryDate,
-      dosageForm,
+      batches: normalizedBatches,
       strength,
       description,
       packSize,
@@ -433,3 +506,5 @@ export class BandaGoNormalizer {
     return Array.from(normalizedMap.values());
   }
 }
+
+export const transformBandaGoRecord = BandaGoNormalizer.normalize;
