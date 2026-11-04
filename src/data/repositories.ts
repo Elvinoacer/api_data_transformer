@@ -1,4 +1,4 @@
-import { db } from './db';
+import { db } from "./db";
 import {
   ActivityEvent,
   CaptureError,
@@ -12,28 +12,28 @@ import {
   RawResponse,
   ScopeMode,
   SessionMetrics,
-} from '../shared/types';
-import { DEFAULT_SETTINGS } from '../shared/constants';
-import { normalizeEndpoint } from '../privacy/url-redaction';
+} from "../shared/types";
+import { DEFAULT_SETTINGS } from "../shared/constants";
+import { normalizeEndpoint } from "../privacy/url-redaction";
 import {
   extractItemsByPath,
   inferBestIdentityKey,
   inferBestRecordPath,
-} from '../extraction/path-selector';
-import { inferDatasetLabel } from '../extraction/label-inference';
-import { mergePaginationState } from '../extraction/pagination-detector';
+} from "../extraction/path-selector";
+import { inferDatasetLabel } from "../extraction/label-inference";
+import { mergePaginationState } from "../extraction/pagination-detector";
 
-const SETTINGS_STORAGE_KEY = 'lndc_global_settings_v1';
+const SETTINGS_STORAGE_KEY = "lndc_global_settings_v1";
 
 export const settingsRepo = {
   async getSettings(): Promise<GlobalSettings> {
     try {
-      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
         const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
         if (stored?.[SETTINGS_STORAGE_KEY]) {
           return { ...DEFAULT_SETTINGS, ...stored[SETTINGS_STORAGE_KEY] };
         }
-      } else if (typeof localStorage !== 'undefined') {
+      } else if (typeof localStorage !== "undefined") {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
         if (raw) {
           return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
@@ -45,17 +45,19 @@ export const settingsRepo = {
     return { ...DEFAULT_SETTINGS };
   },
 
-  async saveSettings(updates: Partial<GlobalSettings>): Promise<GlobalSettings> {
+  async saveSettings(
+    updates: Partial<GlobalSettings>,
+  ): Promise<GlobalSettings> {
     const current = await this.getSettings();
     const merged: GlobalSettings = { ...current, ...updates };
     try {
-      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
         await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: merged });
-      } else if (typeof localStorage !== 'undefined') {
+      } else if (typeof localStorage !== "undefined") {
         localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(merged));
       }
     } catch (err) {
-      console.warn('Could not persist settings:', err);
+      console.warn("Could not persist settings:", err);
     }
     return merged;
   },
@@ -70,9 +72,9 @@ export const sessionRepo = {
     label?: string;
   }): Promise<CaptureSession> {
     const id = `session_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    let hostLabel = 'Website';
+    let hostLabel = "Website";
     try {
-      const urlObj = new URL(params.originalUrl || 'http://localhost');
+      const urlObj = new URL(params.originalUrl || "http://localhost");
       hostLabel = urlObj.hostname;
     } catch {
       // Fallback
@@ -85,8 +87,8 @@ export const sessionRepo = {
       targetTabId: params.targetTabId,
       originalUrl: params.originalUrl,
       allowedHostnames: params.allowedHostnames,
-      scopeMode: params.scopeMode || 'all_tab_apis',
-      status: 'starting',
+      scopeMode: params.scopeMode || "all_tab_apis",
+      status: "starting",
       startedAt: new Date().toISOString(),
     };
 
@@ -94,10 +96,14 @@ export const sessionRepo = {
     return session;
   },
 
-  async updateStatus(sessionId: string, status: CaptureStatus, reason?: string): Promise<void> {
+  async updateStatus(
+    sessionId: string,
+    status: CaptureStatus,
+    reason?: string,
+  ): Promise<void> {
     const updates: Partial<CaptureSession> = { status };
     if (reason !== undefined) updates.errorReason = reason;
-    if (status === 'stopped' || status === 'detached') {
+    if (status === "stopped" || status === "detached") {
       updates.endedAt = new Date().toISOString();
     }
     await db.capture_sessions.update(sessionId, updates);
@@ -115,18 +121,18 @@ export const sessionRepo = {
 
   async getActiveSession(): Promise<CaptureSession | undefined> {
     return db.capture_sessions
-      .where('status')
-      .anyOf(['recording', 'starting', 'paused'])
+      .where("status")
+      .anyOf(["recording", "starting", "paused"])
       .first();
   },
 
   async getAllSessions(): Promise<CaptureSession[]> {
-    return db.capture_sessions.orderBy('startedAt').reverse().toArray();
+    return db.capture_sessions.orderBy("startedAt").reverse().toArray();
   },
 
   async deleteSession(sessionId: string): Promise<void> {
     await db.transaction(
-      'rw',
+      "rw",
       [
         db.capture_sessions,
         db.raw_responses,
@@ -138,18 +144,21 @@ export const sessionRepo = {
       ],
       async () => {
         await db.capture_sessions.delete(sessionId);
-        await db.raw_responses.where('sessionId').equals(sessionId).delete();
-        await db.extracted_records.where('sessionId').equals(sessionId).delete();
-        await db.sources.where('sessionId').equals(sessionId).delete();
-        await db.capture_errors.where('sessionId').equals(sessionId).delete();
-        await db.schemas.where('sessionId').equals(sessionId).delete();
-        await db.activity_events.where('sessionId').equals(sessionId).delete();
-      }
+        await db.raw_responses.where("sessionId").equals(sessionId).delete();
+        await db.extracted_records
+          .where("sessionId")
+          .equals(sessionId)
+          .delete();
+        await db.sources.where("sessionId").equals(sessionId).delete();
+        await db.capture_errors.where("sessionId").equals(sessionId).delete();
+        await db.schemas.where("sessionId").equals(sessionId).delete();
+        await db.activity_events.where("sessionId").equals(sessionId).delete();
+      },
     );
   },
 
   async clearSessionRecords(sessionId: string): Promise<void> {
-    await db.extracted_records.where('sessionId').equals(sessionId).delete();
+    await db.extracted_records.where("sessionId").equals(sessionId).delete();
   },
 };
 
@@ -162,7 +171,10 @@ export const rawResponseRepo = {
   },
 
   async getBySession(sessionId: string, limit = 150): Promise<RawResponse[]> {
-    const all = await db.raw_responses.where('sessionId').equals(sessionId).toArray();
+    const all = await db.raw_responses
+      .where("sessionId")
+      .equals(sessionId)
+      .toArray();
     all.sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
     return all.slice(0, limit);
   },
@@ -172,7 +184,10 @@ export const rawResponseRepo = {
   },
 
   async getAllBySession(sessionId: string): Promise<RawResponse[]> {
-    const all = await db.raw_responses.where('sessionId').equals(sessionId).toArray();
+    const all = await db.raw_responses
+      .where("sessionId")
+      .equals(sessionId)
+      .toArray();
     all.sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
     return all;
   },
@@ -205,7 +220,7 @@ export const sourceRepo = {
         existing.pagination = mergePaginationState(
           existing.pagination,
           params.detectedPagination,
-          params.url
+          params.url,
         );
       }
       await db.sources.put(existing);
@@ -213,8 +228,8 @@ export const sourceRepo = {
     }
 
     // Infer default record path & identity key if sample body is provided
-    let recordPath = 'root';
-    let identityKeyField = 'id';
+    let recordPath = "root";
+    let identityKeyField = "id";
     if (params.parsedBody) {
       recordPath = inferBestRecordPath(params.parsedBody);
       const sampleItems = extractItemsByPath(params.parsedBody, recordPath);
@@ -231,14 +246,19 @@ export const sourceRepo = {
     });
 
     // Disambiguate if another source in the same session already has this exact label
-    const siblingSources = await db.sources.where('sessionId').equals(params.sessionId).toArray();
-    const existingLabels = new Set(siblingSources.map((s) => (s.label || '').toLowerCase()));
+    const siblingSources = await db.sources
+      .where("sessionId")
+      .equals(params.sessionId)
+      .toArray();
+    const existingLabels = new Set(
+      siblingSources.map((s) => (s.label || "").toLowerCase()),
+    );
     if (existingLabels.has(baseLabel.toLowerCase())) {
-      const suffix = params.url.includes('cursor')
-        ? 'Cursor'
-        : params.httpMethod !== 'GET'
-        ? params.httpMethod
-        : `${siblingSources.length + 1}`;
+      const suffix = params.url.includes("cursor")
+        ? "Cursor"
+        : params.httpMethod !== "GET"
+          ? params.httpMethod
+          : `${siblingSources.length + 1}`;
       baseLabel = `${baseLabel} (${suffix})`;
     }
 
@@ -256,7 +276,7 @@ export const sourceRepo = {
       included: true,
       recordPath,
       identityKeyField,
-      consolidationPolicy: 'keep_latest',
+      consolidationPolicy: "keep_latest",
       observedCount: 1,
       lastObservedAt: new Date().toISOString(),
       pagination,
@@ -266,7 +286,10 @@ export const sourceRepo = {
     return { source: newSource, isNew: true };
   },
 
-  async updateSource(id: string, updates: Partial<EndpointSource>): Promise<void> {
+  async updateSource(
+    id: string,
+    updates: Partial<EndpointSource>,
+  ): Promise<void> {
     await db.sources.update(id, updates);
   },
 
@@ -277,7 +300,10 @@ export const sourceRepo = {
   },
 
   async getSourcesBySession(sessionId: string): Promise<EndpointSource[]> {
-    const list = await db.sources.where('sessionId').equals(sessionId).toArray();
+    const list = await db.sources
+      .where("sessionId")
+      .equals(sessionId)
+      .toArray();
     // Ensure backwards compatibility if older records lacked `label`
     return list.map((s) => ({
       ...s,
@@ -297,8 +323,11 @@ export const sourceRepo = {
 };
 
 export const recordRepo = {
-  async upsertRecords(toInsert: ExtractedRecord[], toUpdate: ExtractedRecord[]): Promise<void> {
-    await db.transaction('rw', db.extracted_records, async () => {
+  async upsertRecords(
+    toInsert: ExtractedRecord[],
+    toUpdate: ExtractedRecord[],
+  ): Promise<void> {
+    await db.transaction("rw", db.extracted_records, async () => {
       if (toInsert.length > 0) {
         await db.extracted_records.bulkPut(toInsert);
       }
@@ -308,21 +337,27 @@ export const recordRepo = {
     });
   },
 
-  async getRecordsBySession(sessionId: string, limit = 500): Promise<ExtractedRecord[]> {
+  async getRecordsBySession(
+    sessionId: string,
+    limit = 500,
+  ): Promise<ExtractedRecord[]> {
     return db.extracted_records
-      .where('sessionId')
+      .where("sessionId")
       .equals(sessionId)
       .limit(limit)
       .toArray();
   },
 
   async getAllRecordsBySession(sessionId: string): Promise<ExtractedRecord[]> {
-    return db.extracted_records.where('sessionId').equals(sessionId).toArray();
+    return db.extracted_records.where("sessionId").equals(sessionId).toArray();
   },
 
-  async getRecordsBySource(sessionId: string, sourceId: string): Promise<ExtractedRecord[]> {
+  async getRecordsBySource(
+    sessionId: string,
+    sourceId: string,
+  ): Promise<ExtractedRecord[]> {
     return db.extracted_records
-      .where('sessionId')
+      .where("sessionId")
       .equals(sessionId)
       .filter((r) => r.sourceId === sourceId)
       .toArray();
@@ -339,14 +374,14 @@ export const schemaRepo = {
   },
 
   async getSchemasBySession(sessionId: string): Promise<EndpointSchema[]> {
-    return db.schemas.where('sessionId').equals(sessionId).toArray();
+    return db.schemas.where("sessionId").equals(sessionId).toArray();
   },
 };
 
 export const errorRepo = {
   async logError(params: {
     sessionId: string;
-    kind: CaptureError['kind'];
+    kind: CaptureError["kind"];
     message: string;
     url?: string;
     details?: unknown;
@@ -363,8 +398,14 @@ export const errorRepo = {
     await db.capture_errors.put(error);
   },
 
-  async getErrorsBySession(sessionId: string, limit = 50): Promise<CaptureError[]> {
-    const all = await db.capture_errors.where('sessionId').equals(sessionId).toArray();
+  async getErrorsBySession(
+    sessionId: string,
+    limit = 50,
+  ): Promise<CaptureError[]> {
+    const all = await db.capture_errors
+      .where("sessionId")
+      .equals(sessionId)
+      .toArray();
     all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     return all.slice(0, limit);
   },
@@ -373,8 +414,8 @@ export const errorRepo = {
 export const activityRepo = {
   async logEvent(params: {
     sessionId: string;
-    actor: ActivityEvent['actor'];
-    category: ActivityEvent['category'];
+    actor: ActivityEvent["actor"];
+    category: ActivityEvent["category"];
     message: string;
     detail?: string;
   }): Promise<void> {
@@ -394,9 +435,15 @@ export const activityRepo = {
     }
   },
 
-  async getEventsBySession(sessionId: string, limit = 40): Promise<ActivityEvent[]> {
+  async getEventsBySession(
+    sessionId: string,
+    limit = 40,
+  ): Promise<ActivityEvent[]> {
     try {
-      const all = await db.activity_events.where('sessionId').equals(sessionId).toArray();
+      const all = await db.activity_events
+        .where("sessionId")
+        .equals(sessionId)
+        .toArray();
       all.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       return all.slice(0, limit);
     } catch {
@@ -405,22 +452,20 @@ export const activityRepo = {
   },
 };
 
-export async function calculateSessionMetrics(sessionId: string): Promise<SessionMetrics> {
-  const [
-    rawResponses,
-    captureErrors,
-    uniqueRecords,
-    sources,
-  ] = await Promise.all([
-    db.raw_responses.where('sessionId').equals(sessionId).toArray(),
-    db.capture_errors.where('sessionId').equals(sessionId).count(),
-    db.extracted_records.where('sessionId').equals(sessionId).count(),
-    db.sources.where('sessionId').equals(sessionId).count(),
-  ]);
+export async function calculateSessionMetrics(
+  sessionId: string,
+): Promise<SessionMetrics> {
+  const [rawResponses, captureErrors, uniqueRecords, sources] =
+    await Promise.all([
+      db.raw_responses.where("sessionId").equals(sessionId).toArray(),
+      db.capture_errors.where("sessionId").equals(sessionId).count(),
+      db.extracted_records.where("sessionId").equals(sessionId).count(),
+      db.sources.where("sessionId").equals(sessionId).count(),
+    ]);
 
   const responsesObserved = rawResponses.length;
   const responsesSaved = rawResponses.filter(
-    (r) => r.parseStatus === 'parsed' || r.parseStatus === 'pending'
+    (r) => r.parseStatus === "parsed" || r.parseStatus === "pending",
   ).length;
 
   let bytesStored = 0;
@@ -442,3 +487,18 @@ export async function calculateSessionMetrics(sessionId: string): Promise<Sessio
     bytesStored,
   };
 }
+
+export const syncQueueRepo = {
+  async getQueueStats() {
+    const { SyncQueueManager } = await import("../sync/sync-queue");
+    return SyncQueueManager.getStats();
+  },
+  async retryFailed() {
+    const { SyncQueueManager } = await import("../sync/sync-queue");
+    return SyncQueueManager.retryFailed();
+  },
+  async clearQueue() {
+    const { SyncQueueManager } = await import("../sync/sync-queue");
+    return SyncQueueManager.clearQueue();
+  },
+};

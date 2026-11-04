@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { StatusBadge } from './StatusBadge';
+import React, { useEffect, useState } from "react";
+import { StatusBadge } from "./StatusBadge";
 import {
   AutoPaginateState,
   CaptureSession,
   CaptureStatus,
   SessionMetrics,
-} from '../../shared/types';
+} from "../../shared/types";
 import {
   Play,
   Pause,
@@ -22,16 +22,16 @@ import {
   FastForward,
   ExternalLink,
   Loader2,
-} from 'lucide-react';
+} from "lucide-react";
 
 export type DashboardTab =
-  | 'overview'
-  | 'sources'
-  | 'responses'
-  | 'records'
-  | 'schemas'
-  | 'exports'
-  | 'settings';
+  | "overview"
+  | "sources"
+  | "responses"
+  | "records"
+  | "schemas"
+  | "exports"
+  | "settings";
 
 interface Props {
   currentTab: DashboardTab;
@@ -72,12 +72,14 @@ export const Header: React.FC<Props> = ({
   onOpenSidepanel,
   isManualRefreshing,
 }) => {
-  const [currentWindowId, setCurrentWindowId] = useState<number | undefined>(undefined);
+  const [currentWindowId, setCurrentWindowId] = useState<number | undefined>(
+    undefined,
+  );
 
   useEffect(() => {
     (async () => {
       try {
-        if (typeof chrome !== 'undefined' && chrome.windows?.getCurrent) {
+        if (typeof chrome !== "undefined" && chrome.windows?.getCurrent) {
           const win = await chrome.windows.getCurrent();
           if (win?.id) setCurrentWindowId(win.id);
         }
@@ -88,7 +90,8 @@ export const Header: React.FC<Props> = ({
   }, []);
 
   const isAutoPaginating =
-    autoPaginateState?.status === 'running' || autoPaginateState?.status === 'stopping';
+    autoPaginateState?.status === "running" ||
+    autoPaginateState?.status === "stopping";
 
   const navItems: {
     id: DashboardTab;
@@ -96,38 +99,42 @@ export const Header: React.FC<Props> = ({
     count?: number;
     icon: React.ReactNode;
   }[] = [
-    { id: 'overview', label: 'Overview', icon: <Radio className="w-4 h-4" aria-hidden="true" /> },
     {
-      id: 'sources',
-      label: 'API Datasets',
+      id: "overview",
+      label: "Overview",
+      icon: <Radio className="w-4 h-4" aria-hidden="true" />,
+    },
+    {
+      id: "sources",
+      label: "API Datasets",
       count: metrics.endpointGroups,
       icon: <Layers className="w-4 h-4" aria-hidden="true" />,
     },
     {
-      id: 'records',
-      label: 'Extracted Data',
+      id: "records",
+      label: "Extracted Data",
       count: metrics.uniqueRecords,
       icon: <Database className="w-4 h-4" aria-hidden="true" />,
     },
     {
-      id: 'responses',
-      label: 'Raw Traffic',
+      id: "responses",
+      label: "Raw Traffic",
       count: metrics.responsesSaved,
       icon: <FileCode2 className="w-4 h-4" aria-hidden="true" />,
     },
     {
-      id: 'schemas',
-      label: 'Schemas',
+      id: "schemas",
+      label: "Schemas",
       icon: <ArrowUpDown className="w-4 h-4" aria-hidden="true" />,
     },
     {
-      id: 'exports',
-      label: 'Labeled Exports',
+      id: "exports",
+      label: "Labeled Exports",
       icon: <Download className="w-4 h-4" aria-hidden="true" />,
     },
     {
-      id: 'settings',
-      label: 'Settings & Privacy',
+      id: "settings",
+      label: "Settings & Privacy",
       icon: <Settings className="w-4 h-4" aria-hidden="true" />,
     },
   ];
@@ -161,71 +168,92 @@ export const Header: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="h-6 w-px bg-stone-200 hidden sm:block" aria-hidden="true" />
+          <div
+            className="h-6 w-px bg-stone-200 hidden sm:block"
+            aria-hidden="true"
+          />
 
           <div className="flex items-center gap-2 flex-wrap">
             <StatusBadge status={status} />
 
             {allSessions.length > 1 && session && (
               <div>
-                <label htmlFor="header-session-switcher" className="visually-hidden">
+                <label
+                  htmlFor="header-session-switcher"
+                  className="visually-hidden"
+                >
                   Switch capture session
                 </label>
                 <select
                   id="header-session-switcher"
                   value={session.id}
                   onChange={(e) => onSelectSession(e.target.value)}
-                  disabled={status === 'recording' || status === 'paused'}
+                  disabled={status === "recording" || status === "paused"}
                   className="px-2.5 py-1 bg-stone-50 border border-stone-200 rounded-lg text-xs font-semibold text-obsidian-900 max-w-[190px] truncate disabled:opacity-70"
                 >
                   {allSessions.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.label} ({new Date(s.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                      {s.label} (
+                      {new Date(s.startedAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                      )
                     </option>
                   ))}
                 </select>
               </div>
             )}
 
-            {session?.targetTabId && (status === 'recording' || status === 'paused') && (
-              <button
-                type="button"
-                onClick={onFocusTargetTab}
-                className="inline-flex items-center gap-1.5 text-xs bg-brand-50 hover:bg-brand-100 text-brand-900 border border-brand-300 px-2.5 py-1 rounded-lg font-mono font-semibold transition"
-              >
-                <span className="truncate max-w-[160px]">
-                  {session.allowedHostnames[0] || 'Target Tab'}
-                </span>
-                <ExternalLink className="w-3 h-3 text-brand-700 flex-shrink-0" aria-hidden="true" />
-              </button>
-            )}
+            {session?.targetTabId &&
+              (status === "recording" || status === "paused") && (
+                <button
+                  type="button"
+                  onClick={onFocusTargetTab}
+                  className="inline-flex items-center gap-1.5 text-xs bg-brand-50 hover:bg-brand-100 text-brand-900 border border-brand-300 px-2.5 py-1 rounded-lg font-mono font-semibold transition"
+                >
+                  <span className="truncate max-w-[160px]">
+                    {session.allowedHostnames[0] || "Target Tab"}
+                  </span>
+                  <ExternalLink
+                    className="w-3 h-3 text-brand-700 flex-shrink-0"
+                    aria-hidden="true"
+                  />
+                </button>
+              )}
           </div>
         </div>
 
         {/* Right: Primary Capture & Pagination Actions */}
         <div className="flex items-center gap-2 flex-wrap">
-          {(status === 'recording' || isAutoPaginating) && (
+          {(status === "recording" || isAutoPaginating) && (
             <button
               type="button"
               onClick={onOpenAutoPaginate}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
                 isAutoPaginating
-                  ? 'bg-obsidian-900 text-brand-300 border-obsidian-800 shadow-sm'
-                  : 'bg-brand-50 hover:bg-brand-100 text-brand-900 border-brand-300'
+                  ? "bg-obsidian-900 text-brand-300 border-obsidian-800 shadow-sm"
+                  : "bg-brand-50 hover:bg-brand-100 text-brand-900 border-brand-300"
               }`}
             >
               {isAutoPaginating ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-brand-400" aria-hidden="true" />
+                <Loader2
+                  className="w-3.5 h-3.5 animate-spin text-brand-400"
+                  aria-hidden="true"
+                />
               ) : (
-                <FastForward className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" />
+                <FastForward
+                  className="w-3.5 h-3.5 text-brand-700"
+                  aria-hidden="true"
+                />
               )}
               {isAutoPaginating
                 ? `Fetching Page ${autoPaginateState?.pagesAttempted}/${autoPaginateState?.maxPages}`
-                : 'Fetch Pages'}
+                : "Fetch Pages"}
             </button>
           )}
 
-          {status === 'recording' ? (
+          {status === "recording" ? (
             <button
               type="button"
               onClick={onPause}
@@ -233,13 +261,14 @@ export const Header: React.FC<Props> = ({
             >
               <Pause className="w-3.5 h-3.5" aria-hidden="true" /> Pause
             </button>
-          ) : status === 'paused' ? (
+          ) : status === "paused" ? (
             <button
               type="button"
               onClick={onResume}
               className="btn-lime inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-400 hover:bg-brand-300 text-obsidian-950 border border-brand-500 text-xs font-bold rounded-xl shadow-lime-glow transition"
             >
-              <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" /> Resume
+              <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />{" "}
+              Resume
             </button>
           ) : (
             <button
@@ -247,17 +276,19 @@ export const Header: React.FC<Props> = ({
               onClick={onStart}
               className="btn-lime inline-flex items-center gap-1.5 px-4 py-1.5 bg-brand-400 hover:bg-brand-300 text-obsidian-950 border border-brand-500 text-xs font-bold rounded-xl shadow-lime-glow transition"
             >
-              <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" /> New Capture
+              <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />{" "}
+              New Capture
             </button>
           )}
 
-          {(status === 'recording' || status === 'paused') && (
+          {(status === "recording" || status === "paused") && (
             <button
               type="button"
               onClick={onStop}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 border border-rose-300 text-xs font-bold rounded-xl transition"
             >
-              <Square className="w-3.5 h-3.5 fill-current" aria-hidden="true" /> Stop
+              <Square className="w-3.5 h-3.5 fill-current" aria-hidden="true" />{" "}
+              Stop
             </button>
           )}
 
@@ -269,7 +300,7 @@ export const Header: React.FC<Props> = ({
             className="p-2 text-stone-600 hover:text-obsidian-900 rounded-xl hover:bg-stone-100 border border-stone-200 transition"
           >
             <RefreshCw
-              className={`w-4 h-4 ${isManualRefreshing ? 'animate-spin text-brand-700' : ''}`}
+              className={`w-4 h-4 ${isManualRefreshing ? "animate-spin text-brand-700" : ""}`}
               aria-hidden="true"
             />
           </button>
@@ -296,22 +327,24 @@ export const Header: React.FC<Props> = ({
             <button
               key={item.id}
               type="button"
-              aria-current={isActive ? 'page' : undefined}
+              aria-current={isActive ? "page" : undefined}
               onClick={() => onTabChange(item.id)}
               className={`inline-flex items-center gap-2 py-2.5 px-3.5 text-xs border-b-2 transition whitespace-nowrap ${
                 isActive
-                  ? 'border-brand-600 text-obsidian-900 font-bold bg-brand-50/40'
-                  : 'border-transparent text-stone-600 hover:text-obsidian-900 hover:border-stone-300 font-medium'
+                  ? "border-brand-600 text-obsidian-900 font-bold bg-brand-50/40"
+                  : "border-transparent text-stone-600 hover:text-obsidian-900 hover:border-stone-300 font-medium"
               }`}
             >
-              <span className={isActive ? 'text-brand-700' : 'text-stone-400'}>{item.icon}</span>
+              <span className={isActive ? "text-brand-700" : "text-stone-400"}>
+                {item.icon}
+              </span>
               <span>{item.label}</span>
               {item.count !== undefined && item.count > 0 && (
                 <span
                   className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold tabular-nums ${
                     isActive
-                      ? 'bg-brand-300 text-obsidian-950'
-                      : 'bg-stone-100 text-stone-700'
+                      ? "bg-brand-300 text-obsidian-950"
+                      : "bg-stone-100 text-stone-700"
                   }`}
                 >
                   {item.count}

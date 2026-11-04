@@ -19,7 +19,7 @@ export const tabManager = {
 
       try {
         const parsed = new URL(tab.url);
-        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
           selectable.push({
             id: tab.id,
             title: tab.title || tab.url,

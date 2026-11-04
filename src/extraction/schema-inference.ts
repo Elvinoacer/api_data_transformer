@@ -1,5 +1,5 @@
-import { EndpointSchema, SchemaField } from '../shared/types';
-import { flattenObject } from './flatten';
+import { EndpointSchema, SchemaField } from "../shared/types";
+import { flattenObject } from "./flatten";
 
 /**
  * Analyzes an array of objects to infer their schema structure, field types, optionality, and potential type conflicts.
@@ -11,17 +11,19 @@ export function inferSchemaFromRecords(params: {
   records: unknown[];
   existingSchema?: EndpointSchema;
 }): EndpointSchema {
-  const { sourceId, sessionId, inferredRecordPath, records, existingSchema } = params;
+  const { sourceId, sessionId, inferredRecordPath, records, existingSchema } =
+    params;
 
   const fields: Record<string, SchemaField> = existingSchema
     ? JSON.parse(JSON.stringify(existingSchema.fields))
     : {};
 
-  const totalRecordCount = (existingSchema?.detectedCount ?? 0) + records.length;
+  const totalRecordCount =
+    (existingSchema?.detectedCount ?? 0) + records.length;
   const presentFieldCounts: Record<string, number> = {};
 
   for (const item of records) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== "object") continue;
 
     const flattened = flattenObject(item);
 
@@ -48,7 +50,9 @@ export function inferSchemaFromRecords(params: {
           val !== null &&
           val !== undefined &&
           field.sampleValues.length < 3 &&
-          !field.sampleValues.some((s) => JSON.stringify(s) === JSON.stringify(val))
+          !field.sampleValues.some(
+            (s) => JSON.stringify(s) === JSON.stringify(val),
+          )
         ) {
           field.sampleValues.push(val);
         }
@@ -65,7 +69,7 @@ export function inferSchemaFromRecords(params: {
     }
 
     // A conflict is when multiple non-null distinct primitive types exist (e.g. number and string)
-    const nonNullTypes = field.types.filter((t) => t !== 'null');
+    const nonNullTypes = field.types.filter((t) => t !== "null");
     field.hasConflict = nonNullTypes.length > 1;
   }
 
@@ -80,13 +84,13 @@ export function inferSchemaFromRecords(params: {
 }
 
 function detectValueType(
-  val: unknown
-): 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array' {
-  if (val === null || val === undefined) return 'null';
-  if (Array.isArray(val)) return 'array';
+  val: unknown,
+): "string" | "number" | "boolean" | "null" | "object" | "array" {
+  if (val === null || val === undefined) return "null";
+  if (Array.isArray(val)) return "array";
   const type = typeof val;
-  if (type === 'string') return 'string';
-  if (type === 'number') return 'number';
-  if (type === 'boolean') return 'boolean';
-  return 'object';
+  if (type === "string") return "string";
+  if (type === "number") return "number";
+  if (type === "boolean") return "boolean";
+  return "object";
 }

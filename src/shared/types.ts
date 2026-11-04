@@ -1,13 +1,13 @@
 export type CaptureStatus =
-  | 'idle'
-  | 'starting'
-  | 'recording'
-  | 'paused'
-  | 'stopped'
-  | 'detached'
-  | 'error';
+  | "idle"
+  | "starting"
+  | "recording"
+  | "paused"
+  | "stopped"
+  | "detached"
+  | "error";
 
-export type ScopeMode = 'all_tab_apis' | 'same_domain' | 'selected_hosts';
+export type ScopeMode = "all_tab_apis" | "same_domain" | "selected_hosts";
 
 export interface CaptureSession {
   id: string;
@@ -25,13 +25,10 @@ export interface CaptureSession {
 }
 
 export type ParseStatus =
-  | 'pending'
-  | 'parsed'
-  | 'invalid_json'
-  | 'excluded'
-  | 'failed';
+  "pending" | "parsed" | "invalid_json" | "excluded" | "failed";
 
-export type PaginationStrategy = 'page' | 'offset' | 'cursor' | 'next_url' | 'none';
+export type PaginationStrategy =
+  "page" | "offset" | "cursor" | "next_url" | "none";
 
 export interface DetectedPagination {
   strategy: PaginationStrategy;
@@ -81,7 +78,7 @@ export interface RawResponse {
   errorMessage?: string;
 }
 
-export type ConsolidationPolicy = 'keep_latest' | 'keep_first' | 'keep_all';
+export type ConsolidationPolicy = "keep_latest" | "keep_first" | "keep_all";
 
 export interface ExtractedRecord {
   id: string;
@@ -114,7 +111,7 @@ export interface EndpointSource {
 
 export interface SchemaField {
   path: string;
-  types: ('string' | 'number' | 'boolean' | 'null' | 'object' | 'array')[];
+  types: ("string" | "number" | "boolean" | "null" | "object" | "array")[];
   optional: boolean;
   sampleValues: unknown[];
   hasConflict: boolean;
@@ -133,7 +130,12 @@ export interface CaptureError {
   id: string;
   sessionId: string;
   timestamp: string;
-  kind: 'debugger_attach' | 'body_retrieval' | 'parse_error' | 'storage_limit' | 'other';
+  kind:
+    | "debugger_attach"
+    | "body_retrieval"
+    | "parse_error"
+    | "storage_limit"
+    | "other";
   url?: string;
   message: string;
   details?: unknown;
@@ -143,16 +145,16 @@ export interface ActivityEvent {
   id: string;
   sessionId: string;
   timestamp: string;
-  actor: 'system' | 'user';
+  actor: "system" | "user";
   category:
-    | 'capture'
-    | 'discovery'
-    | 'pagination'
-    | 'extraction'
-    | 'export'
-    | 'session'
-    | 'config'
-    | 'warning';
+    | "capture"
+    | "discovery"
+    | "pagination"
+    | "extraction"
+    | "export"
+    | "session"
+    | "config"
+    | "warning";
   message: string;
   detail?: string;
 }
@@ -167,7 +169,7 @@ export interface SessionMetrics {
   bytesStored: number;
 }
 
-export type AutoPaginateMode = 'dom_click' | 'api_fetch' | 'scroll';
+export type AutoPaginateMode = "dom_click" | "api_fetch" | "scroll";
 
 export interface AutoPaginateConfig {
   sessionId: string;
@@ -181,7 +183,7 @@ export interface AutoPaginateConfig {
 }
 
 export interface AutoPaginateState {
-  status: 'idle' | 'running' | 'stopping' | 'completed' | 'error';
+  status: "idle" | "running" | "stopping" | "completed" | "error";
   mode?: AutoPaginateMode;
   sourceId?: string;
   pagesAttempted: number;
@@ -201,7 +203,7 @@ export interface RedactionRule {
 export interface GlobalSettings {
   maxResponseBodyBytes: number; // default 10MB
   formulaInjectionDefense: boolean;
-  defaultExportEncoding: 'utf-8' | 'utf-8-bom';
+  defaultExportEncoding: "utf-8" | "utf-8-bom";
   sensitiveUrlParams: string[];
   sensitiveEndpointKeywords: string[];
   autoExtractCommonPaths: boolean;

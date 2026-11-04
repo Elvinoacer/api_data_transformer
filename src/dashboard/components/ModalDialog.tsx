@@ -1,5 +1,5 @@
-import React, { useEffect, useId, useRef } from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect, useId, useRef } from "react";
+import { X } from "lucide-react";
 
 interface ModalDialogProps {
   isOpen: boolean;
@@ -19,7 +19,7 @@ export const ModalDialog: React.FC<ModalDialogProps> = ({
   title,
   subtitle,
   allowBackdropDismiss = true,
-  maxWidthClass = 'max-w-2xl',
+  maxWidthClass = "max-w-2xl",
   headerActions,
   footer,
   children,
@@ -33,7 +33,7 @@ export const ModalDialog: React.FC<ModalDialogProps> = ({
     if (!dialog) return;
 
     if (isOpen) {
-      if (!dialog.open && typeof dialog.showModal === 'function') {
+      if (!dialog.open && typeof dialog.showModal === "function") {
         dialog.showModal();
       }
     } else if (dialog.open) {
@@ -47,19 +47,22 @@ export const ModalDialog: React.FC<ModalDialogProps> = ({
     if (!dialog) return;
 
     const handleClose = () => {
-      dialog.returnValue = '';
+      dialog.returnValue = "";
       onClose();
     };
 
-    dialog.addEventListener('close', handleClose);
-    return () => dialog.removeEventListener('close', handleClose);
+    dialog.addEventListener("close", handleClose);
+    return () => dialog.removeEventListener("close", handleClose);
   }, [onClose]);
 
   // Fallback for browsers without native `<dialog closedby="any">` support (< Chrome 134)
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog || !allowBackdropDismiss) return;
-    if (typeof HTMLDialogElement !== 'undefined' && 'closedBy' in HTMLDialogElement.prototype) {
+    if (
+      typeof HTMLDialogElement !== "undefined" &&
+      "closedBy" in HTMLDialogElement.prototype
+    ) {
       return;
     }
 
@@ -84,11 +87,11 @@ export const ModalDialog: React.FC<ModalDialogProps> = ({
       pressedOutside = false;
     };
 
-    dialog.addEventListener('pointerdown', onPointerDown);
-    dialog.addEventListener('pointerup', onPointerUp);
+    dialog.addEventListener("pointerdown", onPointerDown);
+    dialog.addEventListener("pointerup", onPointerUp);
     return () => {
-      dialog.removeEventListener('pointerdown', onPointerDown);
-      dialog.removeEventListener('pointerup', onPointerUp);
+      dialog.removeEventListener("pointerdown", onPointerDown);
+      dialog.removeEventListener("pointerup", onPointerUp);
     };
   }, [allowBackdropDismiss]);
 
@@ -97,7 +100,7 @@ export const ModalDialog: React.FC<ModalDialogProps> = ({
       ref={dialogRef}
       aria-labelledby={titleId}
       aria-describedby={subtitle ? subtitleId : undefined}
-      {...({ closedby: allowBackdropDismiss ? 'any' : 'closerequest' } as any)}
+      {...({ closedby: allowBackdropDismiss ? "any" : "closerequest" } as any)}
       className={`w-full ${maxWidthClass} rounded-2xl shadow-elevated border border-stone-200 bg-white text-obsidian-900 overflow-hidden m-auto`}
     >
       {isOpen && (
@@ -105,11 +108,17 @@ export const ModalDialog: React.FC<ModalDialogProps> = ({
           {/* Header */}
           <div className="px-6 py-4 border-b border-stone-200/80 flex items-start justify-between gap-4 bg-stone-50/70">
             <div className="min-w-0">
-              <h2 id={titleId} className="font-bold text-obsidian-900 text-base leading-snug">
+              <h2
+                id={titleId}
+                className="font-bold text-obsidian-900 text-base leading-snug"
+              >
                 {title}
               </h2>
               {subtitle && (
-                <p id={subtitleId} className="text-xs text-stone-600 mt-0.5 leading-relaxed">
+                <p
+                  id={subtitleId}
+                  className="text-xs text-stone-600 mt-0.5 leading-relaxed"
+                >
                   {subtitle}
                 </p>
               )}

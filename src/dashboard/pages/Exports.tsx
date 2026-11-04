@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from "react";
 import {
   EndpointSource,
   ExtractedRecord,
   RawResponse,
   CaptureSession,
-} from '../../shared/types';
+} from "../../shared/types";
 import {
   Download,
   FileSpreadsheet,
@@ -16,18 +16,18 @@ import {
   FolderDown,
   SlidersHorizontal,
   Edit2,
-} from 'lucide-react';
-import { generateFlattenedCsv, generateRawRecordCsv } from '../../export/csv';
-import { generateJsonExport } from '../../export/json';
-import { generateJsonlExport } from '../../export/jsonl';
-import { generateExportFilename } from '../../export/filenames';
+} from "lucide-react";
+import { generateFlattenedCsv, generateRawRecordCsv } from "../../export/csv";
+import { generateJsonExport } from "../../export/json";
+import { generateJsonlExport } from "../../export/jsonl";
+import { generateExportFilename } from "../../export/filenames";
 import {
   collectUniqueColumns,
   flattenObject,
   formatColumnHeader,
-} from '../../extraction/flatten';
-import { activityRepo, sourceRepo } from '../../data/repositories';
-import { useToast } from '../components/ToastProvider';
+} from "../../extraction/flatten";
+import { activityRepo, sourceRepo } from "../../data/repositories";
+import { useToast } from "../components/ToastProvider";
 
 interface Props {
   session: CaptureSession | null;
@@ -38,7 +38,7 @@ interface Props {
   onRefreshSources?: () => Promise<void>;
 }
 
-type ExportFormat = 'csv_flattened' | 'csv_raw' | 'jsonl' | 'json_bundle';
+type ExportFormat = "csv_flattened" | "csv_raw" | "jsonl" | "json_bundle";
 
 export const Exports: React.FC<Props> = ({
   session,
@@ -50,19 +50,26 @@ export const Exports: React.FC<Props> = ({
 }) => {
   const { notify } = useToast();
 
-  const [format, setFormat] = useState<ExportFormat>('csv_flattened');
+  const [format, setFormat] = useState<ExportFormat>("csv_flattened");
   const [selectedSourceId, setSelectedSourceId] = useState<string>(
-    initialSourceId || (sources.length === 1 ? sources[0].id : 'all')
+    initialSourceId || (sources.length === 1 ? sources[0].id : "all"),
   );
-  const [exportLabel, setExportLabel] = useState<string>('');
-  const [includeTimeInFilename, setIncludeTimeInFilename] = useState<boolean>(false);
-  const [headerStyle, setHeaderStyle] = useState<'readable' | 'dot'>('readable');
-  const [arrayFormat, setArrayFormat] = useState<'readable' | 'json'>('readable');
+  const [exportLabel, setExportLabel] = useState<string>("");
+  const [includeTimeInFilename, setIncludeTimeInFilename] =
+    useState<boolean>(false);
+  const [headerStyle, setHeaderStyle] = useState<"readable" | "dot">(
+    "readable",
+  );
+  const [arrayFormat, setArrayFormat] = useState<"readable" | "json">(
+    "readable",
+  );
   const [includeBom, setIncludeBom] = useState(true);
   const [defendFormulaInjection, setDefendFormulaInjection] = useState(true);
   const [nullAsBlank, setNullAsBlank] = useState(true);
   const [showColumnSelector, setShowColumnSelector] = useState(false);
-  const [excludedColumns, setExcludedColumns] = useState<Set<string>>(new Set());
+  const [excludedColumns, setExcludedColumns] = useState<Set<string>>(
+    new Set(),
+  );
   const [downloading, setDownloading] = useState(false);
   const [batchDownloading, setBatchDownloading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -91,7 +98,7 @@ export const Exports: React.FC<Props> = ({
   }, [records]);
 
   const activeSource =
-    selectedSourceId !== 'all' ? sourceMap.get(selectedSourceId) || null : null;
+    selectedSourceId !== "all" ? sourceMap.get(selectedSourceId) || null : null;
 
   // Sync default semantic label whenever selected dataset changes
   useEffect(() => {
@@ -100,15 +107,22 @@ export const Exports: React.FC<Props> = ({
     } else if (sources.length === 1) {
       setExportLabel(sources[0].label);
     } else {
-      const cleanSessionLabel = session?.label?.replace(/\s+capture$/i, '') || 'all_datasets';
+      const cleanSessionLabel =
+        session?.label?.replace(/\s+capture$/i, "") || "all_datasets";
       setExportLabel(cleanSessionLabel);
     }
     setExcludedColumns(new Set());
-  }, [selectedSourceId, activeSource?.id, activeSource?.label, sources.length, session?.label]);
+  }, [
+    selectedSourceId,
+    activeSource?.id,
+    activeSource?.label,
+    sources.length,
+    session?.label,
+  ]);
 
   // Filter records by selected API dataset
   const targetRecords = useMemo(() => {
-    if (selectedSourceId === 'all') return records;
+    if (selectedSourceId === "all") return records;
     return records.filter((r) => r.sourceId === selectedSourceId);
   }, [records, selectedSourceId]);
 
@@ -117,32 +131,41 @@ export const Exports: React.FC<Props> = ({
     if (targetRecords.length === 0) return [];
     const sample = targetRecords.slice(0, 200).map((r) => {
       const base =
-        typeof r.rawRecord === 'object' && r.rawRecord !== null
+        typeof r.rawRecord === "object" && r.rawRecord !== null
           ? (r.rawRecord as Record<string, unknown>)
           : { value: r.rawRecord };
-      if (selectedSourceId === 'all' && sources.length > 1) {
-        const srcLabel = sourceMap.get(r.sourceId)?.label || 'Dataset';
-        return flattenObject({ dataset: srcLabel, ...base }, '', {}, { arrayFormat });
+      if (selectedSourceId === "all" && sources.length > 1) {
+        const srcLabel = sourceMap.get(r.sourceId)?.label || "Dataset";
+        return flattenObject(
+          { dataset: srcLabel, ...base },
+          "",
+          {},
+          { arrayFormat },
+        );
       }
-      return flattenObject(base, '', {}, { arrayFormat });
+      return flattenObject(base, "", {}, { arrayFormat });
     });
     return collectUniqueColumns(sample);
   }, [targetRecords, selectedSourceId, sources.length, sourceMap, arrayFormat]);
 
   const activeColumns = useMemo(
     () => availableColumns.filter((c) => !excludedColumns.has(c)),
-    [availableColumns, excludedColumns]
+    [availableColumns, excludedColumns],
   );
 
   // Compute clean labeled filename
-  const ext = format.startsWith('csv') ? 'csv' : format === 'jsonl' ? 'jsonl' : 'json';
+  const ext = format.startsWith("csv")
+    ? "csv"
+    : format === "jsonl"
+      ? "jsonl"
+      : "json";
 
   const filename = useMemo(() => {
-    const site = session?.allowedHostnames[0] || 'site';
+    const site = session?.allowedHostnames[0] || "site";
     const effectiveLabel =
       exportLabel.trim() ||
       activeSource?.label ||
-      (selectedSourceId === 'all' ? 'all_datasets' : 'dataset');
+      (selectedSourceId === "all" ? "all_datasets" : "dataset");
 
     return generateExportFilename({
       label: effectiveLabel,
@@ -150,20 +173,27 @@ export const Exports: React.FC<Props> = ({
       extension: ext,
       includeTime: includeTimeInFilename,
     });
-  }, [session?.allowedHostnames, exportLabel, activeSource?.label, selectedSourceId, ext, includeTimeInFilename]);
+  }, [
+    session?.allowedHostnames,
+    exportLabel,
+    activeSource?.label,
+    selectedSourceId,
+    ext,
+    includeTimeInFilename,
+  ]);
 
   // Build export payload for single / combined view
   const exportPayload = useMemo(() => {
     switch (format) {
-      case 'csv_flattened': {
+      case "csv_flattened": {
         const items = targetRecords.map((r) => {
           const rawObj =
-            typeof r.rawRecord === 'object' && r.rawRecord !== null
+            typeof r.rawRecord === "object" && r.rawRecord !== null
               ? (r.rawRecord as Record<string, unknown>)
               : { value: r.rawRecord };
-          if (selectedSourceId === 'all' && sources.length > 1) {
+          if (selectedSourceId === "all" && sources.length > 1) {
             return {
-              dataset: sourceMap.get(r.sourceId)?.label || 'Dataset',
+              dataset: sourceMap.get(r.sourceId)?.label || "Dataset",
               ...rawObj,
             };
           }
@@ -172,20 +202,22 @@ export const Exports: React.FC<Props> = ({
         return generateFlattenedCsv(items, {
           includeBom,
           defendFormulaInjection,
-          nullValueRepresentation: nullAsBlank ? '' : 'null',
+          nullValueRepresentation: nullAsBlank ? "" : "null",
           arrayFormat,
           headerStyle,
           columns: activeColumns.length > 0 ? activeColumns : undefined,
         });
       }
-      case 'csv_raw': {
+      case "csv_raw": {
         const items = targetRecords.map((r) => {
           const src = sourceMap.get(r.sourceId);
           return {
             id: r.id,
-            label: src?.label || exportLabel || 'Dataset',
+            label: src?.label || exportLabel || "Dataset",
             capturedAt: r.extractedAt,
-            source: src ? `${src.httpMethod} ${src.normalizedEndpoint}` : r.sourceId,
+            source: src
+              ? `${src.httpMethod} ${src.normalizedEndpoint}`
+              : r.sourceId,
             rawRecord: r.rawRecord,
           };
         });
@@ -194,16 +226,16 @@ export const Exports: React.FC<Props> = ({
           defendFormulaInjection,
         });
       }
-      case 'jsonl': {
+      case "jsonl": {
         const items = targetRecords.map((r) => {
           if (
-            selectedSourceId === 'all' &&
+            selectedSourceId === "all" &&
             sources.length > 1 &&
-            typeof r.rawRecord === 'object' &&
+            typeof r.rawRecord === "object" &&
             r.rawRecord !== null
           ) {
             return {
-              _dataset: sourceMap.get(r.sourceId)?.label || 'Dataset',
+              _dataset: sourceMap.get(r.sourceId)?.label || "Dataset",
               ...(r.rawRecord as Record<string, unknown>),
             };
           }
@@ -211,19 +243,18 @@ export const Exports: React.FC<Props> = ({
         });
         return generateJsonlExport(items);
       }
-      case 'json_bundle': {
+      case "json_bundle": {
         return generateJsonExport({
-          datasetLabel: exportLabel.trim() || activeSource?.label || 'All Datasets',
+          datasetLabel:
+            exportLabel.trim() || activeSource?.label || "All Datasets",
           session,
           exportedAt: new Date().toISOString(),
-          sources: activeSource
-            ? [activeSource]
-            : sources,
+          sources: activeSource ? [activeSource] : sources,
           recordsCount: targetRecords.length,
           rawResponsesCount: rawResponses.length,
           records: targetRecords.map((r) => ({
             ...r,
-            datasetLabel: sourceMap.get(r.sourceId)?.label || 'Dataset',
+            datasetLabel: sourceMap.get(r.sourceId)?.label || "Dataset",
           })),
           rawResponses: rawResponses.slice(0, 50),
         });
@@ -247,10 +278,14 @@ export const Exports: React.FC<Props> = ({
     rawResponses,
   ]);
 
-  const triggerBrowserDownload = (content: string, downloadName: string, mimeType: string) => {
+  const triggerBrowserDownload = (
+    content: string,
+    downloadName: string,
+    mimeType: string,
+  ) => {
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
     a.download = downloadName;
     document.body.appendChild(a);
@@ -260,11 +295,11 @@ export const Exports: React.FC<Props> = ({
   };
 
   const getMimeType = () =>
-    format.startsWith('csv')
-      ? 'text/csv;charset=utf-8'
-      : format === 'jsonl'
-      ? 'application/x-ndjson;charset=utf-8'
-      : 'application/json;charset=utf-8';
+    format.startsWith("csv")
+      ? "text/csv;charset=utf-8"
+      : format === "jsonl"
+        ? "application/x-ndjson;charset=utf-8"
+        : "application/json;charset=utf-8";
 
   const handlePersistSourceLabelIfChanged = async () => {
     if (
@@ -292,8 +327,8 @@ export const Exports: React.FC<Props> = ({
       if (session) {
         await activityRepo.logEvent({
           sessionId: session.id,
-          actor: 'user',
-          category: 'export',
+          actor: "user",
+          category: "export",
           message: `Exported "${exportLabel || filename}" (${targetRecords.length} records)`,
           detail: filename,
         });
@@ -301,16 +336,16 @@ export const Exports: React.FC<Props> = ({
 
       notify({
         title: `Exported ${filename}`,
-        description: `${targetRecords.length} records saved locally with clean "${exportLabel.trim() || 'Dataset'}" labeling.`,
-        variant: 'success',
-        actor: 'user',
+        description: `${targetRecords.length} records saved locally with clean "${exportLabel.trim() || "Dataset"}" labeling.`,
+        variant: "success",
+        actor: "user",
       });
     } catch (err: any) {
       notify({
-        title: 'Export failed',
-        description: err?.message || 'Unable to generate download file.',
-        variant: 'error',
-        actor: 'user',
+        title: "Export failed",
+        description: err?.message || "Unable to generate download file.",
+        variant: "error",
+        actor: "user",
       });
     } finally {
       setTimeout(() => setDownloading(false), 700);
@@ -321,16 +356,16 @@ export const Exports: React.FC<Props> = ({
   const sourcesWithData = useMemo(
     () =>
       sources.filter(
-        (s) => s.included && (recordCountsBySource.get(s.id) || 0) > 0
+        (s) => s.included && (recordCountsBySource.get(s.id) || 0) > 0,
       ),
-    [sources, recordCountsBySource]
+    [sources, recordCountsBySource],
   );
 
   const handleBatchExportEachApi = async () => {
     if (sourcesWithData.length === 0) return;
     setBatchDownloading(true);
     try {
-      const site = session?.allowedHostnames[0] || 'site';
+      const site = session?.allowedHostnames[0] || "site";
       const mime = getMimeType();
 
       for (let i = 0; i < sourcesWithData.length; i++) {
@@ -343,19 +378,19 @@ export const Exports: React.FC<Props> = ({
           includeTime: includeTimeInFilename,
         });
 
-        let payload = '';
-        if (format === 'csv_flattened') {
+        let payload = "";
+        if (format === "csv_flattened") {
           payload = generateFlattenedCsv(
             srcRecords.map((r) => r.rawRecord),
             {
               includeBom,
               defendFormulaInjection,
-              nullValueRepresentation: nullAsBlank ? '' : 'null',
+              nullValueRepresentation: nullAsBlank ? "" : "null",
               arrayFormat,
               headerStyle,
-            }
+            },
           );
-        } else if (format === 'csv_raw') {
+        } else if (format === "csv_raw") {
           payload = generateRawRecordCsv(
             srcRecords.map((r) => ({
               id: r.id,
@@ -364,9 +399,9 @@ export const Exports: React.FC<Props> = ({
               source: `${src.httpMethod} ${src.normalizedEndpoint}`,
               rawRecord: r.rawRecord,
             })),
-            { includeBom, defendFormulaInjection }
+            { includeBom, defendFormulaInjection },
           );
-        } else if (format === 'jsonl') {
+        } else if (format === "jsonl") {
           payload = generateJsonlExport(srcRecords.map((r) => r.rawRecord));
         } else {
           payload = generateJsonExport({
@@ -387,24 +422,24 @@ export const Exports: React.FC<Props> = ({
       if (session) {
         await activityRepo.logEvent({
           sessionId: session.id,
-          actor: 'user',
-          category: 'export',
-          message: `Batch-exported ${sourcesWithData.length} labeled API datasets (${sourcesWithData.map((s) => s.label).join(', ')})`,
+          actor: "user",
+          category: "export",
+          message: `Batch-exported ${sourcesWithData.length} labeled API datasets (${sourcesWithData.map((s) => s.label).join(", ")})`,
         });
       }
 
       notify({
         title: `Exported ${sourcesWithData.length} Labeled Files`,
-        description: `Downloaded separate files for: ${sourcesWithData.map((s) => s.label).join(', ')}.`,
-        variant: 'success',
-        actor: 'user',
+        description: `Downloaded separate files for: ${sourcesWithData.map((s) => s.label).join(", ")}.`,
+        variant: "success",
+        actor: "user",
       });
     } catch (err: any) {
       notify({
-        title: 'Batch export error',
-        description: err?.message || 'Could not complete multi-dataset export.',
-        variant: 'error',
-        actor: 'user',
+        title: "Batch export error",
+        description: err?.message || "Could not complete multi-dataset export.",
+        variant: "error",
+        actor: "user",
       });
     } finally {
       setBatchDownloading(false);
@@ -414,22 +449,22 @@ export const Exports: React.FC<Props> = ({
   const handleCopyPreview = async () => {
     if (!exportPayload || targetRecords.length === 0) return;
     try {
-      const cleanText = exportPayload.replace(/^\uFEFF/, '');
+      const cleanText = exportPayload.replace(/^\uFEFF/, "");
       await navigator.clipboard.writeText(cleanText);
       setCopied(true);
       notify({
-        title: 'Copied to clipboard',
+        title: "Copied to clipboard",
         description: `${targetRecords.length} formatted rows copied and ready to paste into Sheets or Excel.`,
-        variant: 'info',
-        actor: 'user',
+        variant: "info",
+        actor: "user",
       });
       setTimeout(() => setCopied(false), 1800);
     } catch {
       notify({
-        title: 'Clipboard unavailable',
-        description: 'Please use the Download button instead.',
-        variant: 'warning',
-        actor: 'user',
+        title: "Clipboard unavailable",
+        description: "Please use the Download button instead.",
+        variant: "warning",
+        actor: "user",
       });
     }
   };
@@ -450,9 +485,9 @@ export const Exports: React.FC<Props> = ({
   };
 
   const previewLines = useMemo(() => {
-    const clean = exportPayload.replace(/^\uFEFF/, '');
+    const clean = exportPayload.replace(/^\uFEFF/, "");
     const lines = clean.split(/\r?\n/).slice(0, 14);
-    return lines.join('\n');
+    return lines.join("\n");
   }, [exportPayload]);
 
   return (
@@ -467,15 +502,16 @@ export const Exports: React.FC<Props> = ({
             Export Labeled API Datasets
           </h2>
           <p className="text-xs text-stone-500 mt-1">
-            Export clean, human-labeled files named directly after your API datasets (e.g.{' '}
+            Export clean, human-labeled files named directly after your API
+            datasets (e.g.{" "}
             <code className="font-mono text-brand-800 bg-brand-50 px-1.5 py-0.5 rounded">
               customers
             </code>
-            ,{' '}
+            ,{" "}
             <code className="font-mono text-brand-800 bg-brand-50 px-1.5 py-0.5 rounded">
               medicines
             </code>
-            ,{' '}
+            ,{" "}
             <code className="font-mono text-brand-800 bg-brand-50 px-1.5 py-0.5 rounded">
               orders
             </code>
@@ -492,7 +528,7 @@ export const Exports: React.FC<Props> = ({
           >
             <FolderDown className="w-4 h-4 text-brand-400" aria-hidden="true" />
             {batchDownloading
-              ? 'Exporting Datasets...'
+              ? "Exporting Datasets..."
               : `Export All ${sourcesWithData.length} APIs as Separate Labeled Files`}
           </button>
         )}
@@ -510,7 +546,8 @@ export const Exports: React.FC<Props> = ({
               1. Select API Dataset to Export
             </h3>
             <span className="text-[11px] text-stone-500">
-              Click any discovered API dataset below to export with its semantic label
+              Click any discovered API dataset below to export with its semantic
+              label
             </span>
           </div>
 
@@ -525,8 +562,8 @@ export const Exports: React.FC<Props> = ({
                   onClick={() => setSelectedSourceId(src.id)}
                   className={`text-left p-3.5 rounded-xl border transition flex flex-col justify-between gap-2 ${
                     isSelected
-                      ? 'border-brand-600 bg-brand-50/70 ring-1 ring-brand-500 shadow-xs'
-                      : 'border-stone-200 bg-stone-50/40 hover:border-stone-300 hover:bg-white'
+                      ? "border-brand-600 bg-brand-50/70 ring-1 ring-brand-500 shadow-xs"
+                      : "border-stone-200 bg-stone-50/40 hover:border-stone-300 hover:bg-white"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
@@ -536,15 +573,16 @@ export const Exports: React.FC<Props> = ({
                     <span
                       className={`px-2 py-0.5 rounded-full text-[11px] font-bold flex-shrink-0 ${
                         isSelected
-                          ? 'bg-obsidian-900 text-brand-300'
-                          : 'bg-stone-200/80 text-stone-700'
+                          ? "bg-obsidian-900 text-brand-300"
+                          : "bg-stone-200/80 text-stone-700"
                       }`}
                     >
                       {count} rows
                     </span>
                   </div>
                   <div className="text-[11px] font-mono text-stone-500 truncate">
-                    {src.httpMethod} {src.normalizedEndpoint.replace(/^https?:\/\/[^/]+/, '')}
+                    {src.httpMethod}{" "}
+                    {src.normalizedEndpoint.replace(/^https?:\/\/[^/]+/, "")}
                   </div>
                 </button>
               );
@@ -553,11 +591,11 @@ export const Exports: React.FC<Props> = ({
             {sources.length > 1 && (
               <button
                 type="button"
-                onClick={() => setSelectedSourceId('all')}
+                onClick={() => setSelectedSourceId("all")}
                 className={`text-left p-3.5 rounded-xl border transition flex flex-col justify-between gap-2 ${
-                  selectedSourceId === 'all'
-                    ? 'border-brand-600 bg-brand-50/70 ring-1 ring-brand-500 shadow-xs'
-                    : 'border-stone-200 bg-stone-50/40 hover:border-stone-300 hover:bg-white'
+                  selectedSourceId === "all"
+                    ? "border-brand-600 bg-brand-50/70 ring-1 ring-brand-500 shadow-xs"
+                    : "border-stone-200 bg-stone-50/40 hover:border-stone-300 hover:bg-white"
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -566,16 +604,17 @@ export const Exports: React.FC<Props> = ({
                   </span>
                   <span
                     className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                      selectedSourceId === 'all'
-                        ? 'bg-obsidian-900 text-brand-300'
-                        : 'bg-stone-200/80 text-stone-700'
+                      selectedSourceId === "all"
+                        ? "bg-obsidian-900 text-brand-300"
+                        : "bg-stone-200/80 text-stone-700"
                     }`}
                   >
                     {records.length} rows
                   </span>
                 </div>
                 <div className="text-[11px] text-stone-500 truncate">
-                  Includes a <code className="font-mono">dataset</code> label column
+                  Includes a <code className="font-mono">dataset</code> label
+                  column
                 </div>
               </button>
             )}
@@ -610,7 +649,10 @@ export const Exports: React.FC<Props> = ({
             </div>
             <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-stone-500">
               <span className="truncate">
-                File: <code className="font-mono font-bold text-brand-900">{filename}</code>
+                File:{" "}
+                <code className="font-mono font-bold text-brand-900">
+                  {filename}
+                </code>
               </span>
             </div>
             <label className="mt-2 flex items-center gap-2 cursor-pointer text-xs text-stone-600">
@@ -629,31 +671,55 @@ export const Exports: React.FC<Props> = ({
             <span className="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-2">
               3. Choose Export Format
             </span>
-            <div className="space-y-2" role="radiogroup" aria-label="Export file format">
+            <div
+              className="space-y-2"
+              role="radiogroup"
+              aria-label="Export file format"
+            >
               {[
                 {
-                  id: 'csv_flattened',
-                  label: 'Clean Spreadsheet CSV',
-                  desc: 'Flattened columns, human-readable headers & arrays',
-                  icon: <FileSpreadsheet className="w-4 h-4 text-brand-700" aria-hidden="true" />,
+                  id: "csv_flattened",
+                  label: "Clean Spreadsheet CSV",
+                  desc: "Flattened columns, human-readable headers & arrays",
+                  icon: (
+                    <FileSpreadsheet
+                      className="w-4 h-4 text-brand-700"
+                      aria-hidden="true"
+                    />
+                  ),
                 },
                 {
-                  id: 'csv_raw',
-                  label: 'Raw Audit CSV (Label + JSON)',
-                  desc: 'Dataset label, timestamp, endpoint, and raw JSON cell',
-                  icon: <FileSpreadsheet className="w-4 h-4 text-stone-600" aria-hidden="true" />,
+                  id: "csv_raw",
+                  label: "Raw Audit CSV (Label + JSON)",
+                  desc: "Dataset label, timestamp, endpoint, and raw JSON cell",
+                  icon: (
+                    <FileSpreadsheet
+                      className="w-4 h-4 text-stone-600"
+                      aria-hidden="true"
+                    />
+                  ),
                 },
                 {
-                  id: 'jsonl',
-                  label: 'JSON Lines (.jsonl)',
-                  desc: 'One JSON object per line for Python, BigQuery & ETL',
-                  icon: <FileJson className="w-4 h-4 text-sky-700" aria-hidden="true" />,
+                  id: "jsonl",
+                  label: "JSON Lines (.jsonl)",
+                  desc: "One JSON object per line for Python, BigQuery & ETL",
+                  icon: (
+                    <FileJson
+                      className="w-4 h-4 text-sky-700"
+                      aria-hidden="true"
+                    />
+                  ),
                 },
                 {
-                  id: 'json_bundle',
-                  label: 'Labeled JSON Bundle (.json)',
-                  desc: 'Dataset metadata, records, and captured sample payloads',
-                  icon: <FileJson className="w-4 h-4 text-teal-700" aria-hidden="true" />,
+                  id: "json_bundle",
+                  label: "Labeled JSON Bundle (.json)",
+                  desc: "Dataset metadata, records, and captured sample payloads",
+                  icon: (
+                    <FileJson
+                      className="w-4 h-4 text-teal-700"
+                      aria-hidden="true"
+                    />
+                  ),
                 },
               ].map((opt) => {
                 const selected = format === opt.id;
@@ -666,8 +732,8 @@ export const Exports: React.FC<Props> = ({
                     onClick={() => setFormat(opt.id as ExportFormat)}
                     className={`w-full text-left p-3 rounded-xl border transition ${
                       selected
-                        ? 'border-brand-600 bg-brand-50/60 ring-1 ring-brand-500 shadow-xs'
-                        : 'border-stone-200 hover:border-stone-300 bg-white'
+                        ? "border-brand-600 bg-brand-50/60 ring-1 ring-brand-500 shadow-xs"
+                        : "border-stone-200 hover:border-stone-300 bg-white"
                     }`}
                   >
                     <div className="flex items-center gap-2 font-bold text-xs text-stone-900 mb-0.5">
@@ -682,7 +748,7 @@ export const Exports: React.FC<Props> = ({
           </div>
 
           {/* CSV Readability & Security Options */}
-          {format === 'csv_flattened' && (
+          {format === "csv_flattened" && (
             <div className="pt-4 border-t border-stone-100 space-y-3">
               <span className="block text-xs font-bold text-stone-700 uppercase tracking-wider">
                 Spreadsheet Clarity
@@ -699,7 +765,9 @@ export const Exports: React.FC<Props> = ({
                   <select
                     id="csv-header-style"
                     value={headerStyle}
-                    onChange={(e) => setHeaderStyle(e.target.value as 'readable' | 'dot')}
+                    onChange={(e) =>
+                      setHeaderStyle(e.target.value as "readable" | "dot")
+                    }
                     className="w-full px-2.5 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-medium text-stone-800"
                   >
                     <option value="readable">Clean Labels</option>
@@ -717,18 +785,22 @@ export const Exports: React.FC<Props> = ({
                   <select
                     id="csv-array-format"
                     value={arrayFormat}
-                    onChange={(e) => setArrayFormat(e.target.value as 'readable' | 'json')}
+                    onChange={(e) =>
+                      setArrayFormat(e.target.value as "readable" | "json")
+                    }
                     className="w-full px-2.5 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-medium text-stone-800"
                   >
                     <option value="readable">Readable (a, b)</option>
-                    <option value="json">JSON ([&quot;a&quot;,&quot;b&quot;])</option>
+                    <option value="json">
+                      JSON ([&quot;a&quot;,&quot;b&quot;])
+                    </option>
                   </select>
                 </div>
               </div>
             </div>
           )}
 
-          {format.startsWith('csv') && (
+          {format.startsWith("csv") && (
             <div className="pt-4 border-t border-stone-100 space-y-2.5">
               <span className="block text-xs font-bold text-stone-700 uppercase tracking-wider">
                 CSV Safety & Compatibility
@@ -746,7 +818,8 @@ export const Exports: React.FC<Props> = ({
                     Formula Injection Defense
                   </span>
                   <span className="text-[11px] text-stone-500">
-                    Escapes leading =, +, -, @ characters for Excel/Sheets safety
+                    Escapes leading =, +, -, @ characters for Excel/Sheets
+                    safety
                   </span>
                 </div>
               </label>
@@ -768,7 +841,7 @@ export const Exports: React.FC<Props> = ({
                 </div>
               </label>
 
-              {format === 'csv_flattened' && (
+              {format === "csv_flattened" && (
                 <label className="flex items-start gap-2.5 cursor-pointer text-xs text-stone-700">
                   <input
                     type="checkbox"
@@ -800,11 +873,14 @@ export const Exports: React.FC<Props> = ({
               {downloading ? (
                 <Check className="w-4 h-4 text-brand-950" aria-hidden="true" />
               ) : (
-                <Download className="w-4 h-4 text-brand-950" aria-hidden="true" />
+                <Download
+                  className="w-4 h-4 text-brand-950"
+                  aria-hidden="true"
+                />
               )}
               {downloading
-                ? 'Saved to Downloads!'
-                : `Download "${exportLabel.trim() || 'Dataset'}" (${targetRecords.length} rows)`}
+                ? "Saved to Downloads!"
+                : `Download "${exportLabel.trim() || "Dataset"}" (${targetRecords.length} rows)`}
             </button>
           </div>
         </div>
@@ -818,7 +894,7 @@ export const Exports: React.FC<Props> = ({
                 Live Export Preview
               </h3>
               <p className="text-xs text-stone-500 mt-0.5">
-                Target filename:{' '}
+                Target filename:{" "}
                 <code className="font-mono text-brand-900 bg-brand-50 border border-brand-200 px-1.5 py-0.5 rounded font-bold">
                   {filename}
                 </code>
@@ -826,18 +902,21 @@ export const Exports: React.FC<Props> = ({
             </div>
 
             <div className="flex items-center gap-2">
-              {format === 'csv_flattened' && availableColumns.length > 0 && (
+              {format === "csv_flattened" && availableColumns.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setShowColumnSelector((v) => !v)}
                   aria-expanded={showColumnSelector}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
                     showColumnSelector
-                      ? 'bg-obsidian-900 text-brand-300 border-obsidian-800'
-                      : 'bg-stone-50 hover:bg-stone-100 text-stone-700 border-stone-200'
+                      ? "bg-obsidian-900 text-brand-300 border-obsidian-800"
+                      : "bg-stone-50 hover:bg-stone-100 text-stone-700 border-stone-200"
                   }`}
                 >
-                  <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+                  <SlidersHorizontal
+                    className="w-3.5 h-3.5"
+                    aria-hidden="true"
+                  />
                   Columns ({activeColumns.length}/{availableColumns.length})
                 </button>
               )}
@@ -849,55 +928,60 @@ export const Exports: React.FC<Props> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-stone-50 hover:bg-stone-100 disabled:opacity-50 text-stone-700 border border-stone-200 rounded-xl text-xs font-semibold transition"
               >
                 {copied ? (
-                  <Check className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" />
+                  <Check
+                    className="w-3.5 h-3.5 text-brand-700"
+                    aria-hidden="true"
+                  />
                 ) : (
                   <Copy className="w-3.5 h-3.5" aria-hidden="true" />
                 )}
-                {copied ? 'Copied' : 'Copy All'}
+                {copied ? "Copied" : "Copy All"}
               </button>
             </div>
           </div>
 
           {/* Interactive Column Picker */}
-          {showColumnSelector && format === 'csv_flattened' && availableColumns.length > 0 && (
-            <div className="p-4 rounded-xl bg-stone-50 border border-stone-200 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-stone-700">
-                  Choose Exported Columns ({activeColumns.length} selected)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setExcludedColumns(new Set())}
-                  className="text-[11px] font-semibold text-brand-800 hover:underline"
-                >
-                  Select All Columns
-                </button>
+          {showColumnSelector &&
+            format === "csv_flattened" &&
+            availableColumns.length > 0 && (
+              <div className="p-4 rounded-xl bg-stone-50 border border-stone-200 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-stone-700">
+                    Choose Exported Columns ({activeColumns.length} selected)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setExcludedColumns(new Set())}
+                    className="text-[11px] font-semibold text-brand-800 hover:underline"
+                  >
+                    Select All Columns
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto">
+                  {availableColumns.map((col) => {
+                    const included = !excludedColumns.has(col);
+                    return (
+                      <label
+                        key={col}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition ${
+                          included
+                            ? "bg-white border-brand-400 text-stone-900 font-medium"
+                            : "bg-stone-100 border-stone-200 text-stone-400 line-through"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={included}
+                          onChange={() => toggleColumn(col)}
+                          className="rounded"
+                        />
+                        <span>{formatColumnHeader(col, headerStyle)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto">
-                {availableColumns.map((col) => {
-                  const included = !excludedColumns.has(col);
-                  return (
-                    <label
-                      key={col}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition ${
-                        included
-                          ? 'bg-white border-brand-400 text-stone-900 font-medium'
-                          : 'bg-stone-100 border-stone-200 text-stone-400 line-through'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={included}
-                        onChange={() => toggleColumn(col)}
-                        className="rounded"
-                      />
-                      <span>{formatColumnHeader(col, headerStyle)}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+            )}
 
           {/* Obsidian Code Preview */}
           <div className="flex-1 bg-obsidian-950 p-4 rounded-xl border border-obsidian-800 overflow-auto font-mono text-xs text-stone-200 max-h-[480px]">
@@ -907,7 +991,8 @@ export const Exports: React.FC<Props> = ({
                   No extracted records in this dataset yet
                 </p>
                 <p className="font-sans text-xs text-stone-400">
-                  Start capture or run Multi-Page Fetch to populate records for export.
+                  Start capture or run Multi-Page Fetch to populate records for
+                  export.
                 </p>
               </div>
             ) : (

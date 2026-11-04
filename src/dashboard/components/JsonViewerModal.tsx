@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { Copy, Check, Search } from 'lucide-react';
-import { ModalDialog } from './ModalDialog';
+import React, { useMemo, useState } from "react";
+import { Copy, Check, Search } from "lucide-react";
+import { ModalDialog } from "./ModalDialog";
 
 interface Props {
   title: string;
@@ -9,12 +9,17 @@ interface Props {
   onClose: () => void;
 }
 
-export const JsonViewerModal: React.FC<Props> = ({ title, data, isOpen, onClose }) => {
+export const JsonViewerModal: React.FC<Props> = ({
+  title,
+  data,
+  isOpen,
+  onClose,
+}) => {
   const [copied, setCopied] = useState(false);
-  const [filterQuery, setFilterQuery] = useState('');
+  const [filterQuery, setFilterQuery] = useState("");
 
   const formattedJson = useMemo(() => {
-    if (typeof data === 'string') {
+    if (typeof data === "string") {
       try {
         return JSON.stringify(JSON.parse(data), null, 2);
       } catch {
@@ -28,10 +33,10 @@ export const JsonViewerModal: React.FC<Props> = ({ title, data, isOpen, onClose 
     if (!filterQuery.trim()) return formattedJson;
     const lower = filterQuery.toLowerCase();
     const matchingLines = formattedJson
-      .split('\n')
+      .split("\n")
       .filter((line) => line.toLowerCase().includes(lower));
     return matchingLines.length > 0
-      ? matchingLines.join('\n')
+      ? matchingLines.join("\n")
       : `// No JSON lines matched "${filterQuery}"`;
   }, [formattedJson, filterQuery]);
 
@@ -58,7 +63,7 @@ export const JsonViewerModal: React.FC<Props> = ({ title, data, isOpen, onClose 
           ) : (
             <Copy className="w-3.5 h-3.5 text-stone-600" aria-hidden="true" />
           )}
-          {copied ? 'Copied JSON' : 'Copy JSON'}
+          {copied ? "Copied JSON" : "Copy JSON"}
         </button>
       }
     >

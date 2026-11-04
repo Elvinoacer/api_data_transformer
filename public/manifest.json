@@ -9,8 +9,16 @@
     "tabs",
     "storage",
     "sidePanel",
-    "downloads"
+    "downloads",
+    "alarms",
+    "scripting"
   ],
+  "host_permissions": [
+    "*://go.bandahealth.org/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+
   "background": {
     "service_worker": "background.js",
     "type": "module"

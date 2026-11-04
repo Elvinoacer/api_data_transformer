@@ -1,13 +1,17 @@
-import { collectUniqueColumns, flattenObject, formatColumnHeader } from '../extraction/flatten';
-import { sanitizeForFormulaInjection } from './sanitize';
+import {
+  collectUniqueColumns,
+  flattenObject,
+  formatColumnHeader,
+} from "../extraction/flatten";
+import { sanitizeForFormulaInjection } from "./sanitize";
 
 export interface CsvExportOptions {
   includeBom?: boolean;
   defendFormulaInjection?: boolean;
-  nullValueRepresentation?: '' | 'null';
+  nullValueRepresentation?: "" | "null";
   columns?: string[];
-  arrayFormat?: 'json' | 'readable';
-  headerStyle?: 'dot' | 'readable';
+  arrayFormat?: "json" | "readable";
+  headerStyle?: "dot" | "readable";
 }
 
 /**
@@ -15,18 +19,16 @@ export interface CsvExportOptions {
  */
 export function formatCsvCell(
   val: unknown,
-  options: CsvExportOptions = {}
+  options: CsvExportOptions = {},
 ): string {
-  const {
-    defendFormulaInjection = true,
-    nullValueRepresentation = '',
-  } = options;
+  const { defendFormulaInjection = true, nullValueRepresentation = "" } =
+    options;
 
   if (val === null || val === undefined) {
     return nullValueRepresentation;
   }
 
-  let str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+  let str = typeof val === "object" ? JSON.stringify(val) : String(val);
 
   if (defendFormulaInjection) {
     str = sanitizeForFormulaInjection(str);
@@ -34,10 +36,10 @@ export function formatCsvCell(
 
   // RFC 4180: If contains comma, quote, newline, or carriage return, enclose in quotes and double quotes
   if (
-    str.includes(',') ||
+    str.includes(",") ||
     str.includes('"') ||
-    str.includes('\n') ||
-    str.includes('\r')
+    str.includes("\n") ||
+    str.includes("\r")
   ) {
     const escaped = str.replace(/"/g, '""');
     return `"${escaped}"`;
@@ -51,19 +53,19 @@ export function formatCsvCell(
  */
 export function generateFlattenedCsv(
   items: unknown[],
-  options: CsvExportOptions = {}
+  options: CsvExportOptions = {},
 ): string {
   if (!items || items.length === 0) {
-    return options.includeBom ? '\uFEFF' : '';
+    return options.includeBom ? "\uFEFF" : "";
   }
 
-  const { arrayFormat = 'json', headerStyle = 'dot' } = options;
+  const { arrayFormat = "json", headerStyle = "dot" } = options;
 
   // Flatten every item
   const flattenedRecords = items.map((item) =>
-    typeof item === 'object' && item !== null
-      ? flattenObject(item, '', {}, { arrayFormat })
-      : { value: item }
+    typeof item === "object" && item !== null
+      ? flattenObject(item, "", {}, { arrayFormat })
+      : { value: item },
   );
 
   // Compute column list
@@ -81,9 +83,9 @@ export function generateFlattenedCsv(
         formatCsvCell(formatColumnHeader(c, headerStyle), {
           ...options,
           defendFormulaInjection: false,
-        })
+        }),
       )
-      .join(',')
+      .join(","),
   );
 
   // Data lines
@@ -92,10 +94,10 @@ export function generateFlattenedCsv(
       const val = (record as any)[col];
       return formatCsvCell(val, options);
     });
-    lines.push(row.join(','));
+    lines.push(row.join(","));
   }
 
-  const csvContent = lines.join('\r\n');
+  const csvContent = lines.join("\r\n");
   return options.includeBom ? `\uFEFF${csvContent}` : csvContent;
 }
 
@@ -103,35 +105,47 @@ export function generateFlattenedCsv(
  * Converts raw responses or records into a CSV with metadata + dataset label + raw JSON column.
  */
 export function generateRawRecordCsv(
-  records: { id: string; capturedAt?: string; source?: string; label?: string; rawRecord: unknown }[],
-  options: CsvExportOptions = {}
+  records: {
+    id: string;
+    capturedAt?: string;
+    source?: string;
+    label?: string;
+    rawRecord: unknown;
+  }[],
+  options: CsvExportOptions = {},
 ): string {
   const hasLabel = records.some((r) => Boolean(r.label));
   const headers = hasLabel
-    ? ['id', 'dataset', 'capturedAt', 'source', 'raw_json']
-    : ['id', 'capturedAt', 'source', 'raw_json'];
+    ? ["id", "dataset", "capturedAt", "source", "raw_json"]
+    : ["id", "capturedAt", "source", "raw_json"];
   const lines: string[] = [];
 
-  lines.push(headers.map((h) => formatCsvCell(h, { ...options, defendFormulaInjection: false })).join(','));
+  lines.push(
+    headers
+      .map((h) =>
+        formatCsvCell(h, { ...options, defendFormulaInjection: false }),
+      )
+      .join(","),
+  );
 
   for (const r of records) {
     const row = hasLabel
       ? [
           formatCsvCell(r.id, options),
-          formatCsvCell(r.label || '', options),
-          formatCsvCell(r.capturedAt || '', options),
-          formatCsvCell(r.source || '', options),
+          formatCsvCell(r.label || "", options),
+          formatCsvCell(r.capturedAt || "", options),
+          formatCsvCell(r.source || "", options),
           formatCsvCell(JSON.stringify(r.rawRecord), options),
         ]
       : [
           formatCsvCell(r.id, options),
-          formatCsvCell(r.capturedAt || '', options),
-          formatCsvCell(r.source || '', options),
+          formatCsvCell(r.capturedAt || "", options),
+          formatCsvCell(r.source || "", options),
           formatCsvCell(JSON.stringify(r.rawRecord), options),
         ];
-    lines.push(row.join(','));
+    lines.push(row.join(","));
   }
 
-  const csvContent = lines.join('\r\n');
+  const csvContent = lines.join("\r\n");
   return options.includeBom ? `\uFEFF${csvContent}` : csvContent;
 }

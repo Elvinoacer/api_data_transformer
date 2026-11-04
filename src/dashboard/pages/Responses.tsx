@@ -1,5 +1,5 @@
-import React, { useState, useId, useMemo } from 'react';
-import { EndpointSource, RawResponse } from '../../shared/types';
+import React, { useState, useId, useMemo } from "react";
+import { EndpointSource, RawResponse } from "../../shared/types";
 import {
   FileCode2,
   Search,
@@ -8,8 +8,8 @@ import {
   AlertOctagon,
   Ban,
   Clock,
-} from 'lucide-react';
-import { JsonViewerModal } from '../components/JsonViewerModal';
+} from "lucide-react";
+import { JsonViewerModal } from "../components/JsonViewerModal";
 
 interface Props {
   responses: RawResponse[];
@@ -17,8 +17,10 @@ interface Props {
 }
 
 export const Responses: React.FC<Props> = ({ responses, sources }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedResponse, setSelectedResponse] = useState<RawResponse | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedResponse, setSelectedResponse] = useState<RawResponse | null>(
+    null,
+  );
   const captionId = useId();
 
   const labelByEndpoint = useMemo(() => {
@@ -32,7 +34,8 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
   const filtered = responses.filter((r) => {
     if (!searchTerm.trim()) return true;
     const lower = searchTerm.toLowerCase();
-    const label = labelByEndpoint.get(`${r.httpMethod}_${r.normalizedEndpoint}`) || '';
+    const label =
+      labelByEndpoint.get(`${r.httpMethod}_${r.normalizedEndpoint}`) || "";
     return (
       r.url.toLowerCase().includes(lower) ||
       r.normalizedEndpoint.toLowerCase().includes(lower) ||
@@ -42,37 +45,47 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
   });
 
   const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
+    if (bytes === 0) return "0 B";
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB'];
+    const sizes = ["B", "KB", "MB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
-  const getStatusBadge = (status: RawResponse['parseStatus']) => {
+  const getStatusBadge = (status: RawResponse["parseStatus"]) => {
     switch (status) {
-      case 'parsed':
+      case "parsed":
         return (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-brand-900 bg-brand-50 border border-brand-300 px-2 py-0.5 rounded-full">
-            <CheckCircle2 className="w-3 h-3 text-brand-700" aria-hidden="true" /> Parsed
+            <CheckCircle2
+              className="w-3 h-3 text-brand-700"
+              aria-hidden="true"
+            />{" "}
+            Parsed
           </span>
         );
-      case 'invalid_json':
+      case "invalid_json":
         return (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
-            <AlertOctagon className="w-3 h-3 text-rose-600" aria-hidden="true" /> Invalid JSON
+            <AlertOctagon
+              className="w-3 h-3 text-rose-600"
+              aria-hidden="true"
+            />{" "}
+            Invalid JSON
           </span>
         );
-      case 'excluded':
+      case "excluded":
         return (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-stone-600 bg-stone-100 border border-stone-200 px-2 py-0.5 rounded-full">
-            <Ban className="w-3 h-3 text-stone-500" aria-hidden="true" /> Excluded
+            <Ban className="w-3 h-3 text-stone-500" aria-hidden="true" />{" "}
+            Excluded
           </span>
         );
       default:
         return (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-            <Clock className="w-3 h-3 text-amber-600" aria-hidden="true" /> Pending
+            <Clock className="w-3 h-3 text-amber-600" aria-hidden="true" />{" "}
+            Pending
           </span>
         );
     }
@@ -88,7 +101,8 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
             Captured Raw API Responses ({responses.length})
           </h2>
           <p className="text-xs text-stone-600 mt-1">
-            Append-only history of every observed JSON payload, including sensitive parameter redaction and detected page numbers.
+            Append-only history of every observed JSON payload, including
+            sensitive parameter redaction and detected page numbers.
           </p>
         </div>
 
@@ -116,8 +130,8 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
         {filtered.length === 0 ? (
           <div className="p-12 text-center text-stone-500 text-xs">
             {responses.length === 0
-              ? 'No raw responses captured yet. Navigate the target website tab to observe API traffic.'
-              : 'No responses match your search query.'}
+              ? "No raw responses captured yet. Navigate the target website tab to observe API traffic."
+              : "No responses match your search query."}
           </div>
         ) : (
           <div
@@ -132,23 +146,44 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
               </caption>
               <thead className="bg-stone-100/95 text-[11px] font-bold uppercase text-stone-600 border-b border-stone-200">
                 <tr>
-                  <th scope="col" className="px-5 py-3">Time</th>
-                  <th scope="col" className="px-5 py-3">Dataset</th>
-                  <th scope="col" className="px-5 py-3">Method & Status</th>
-                  <th scope="col" className="px-5 py-3">Redacted URL</th>
-                  <th scope="col" className="px-5 py-3">Items & Page</th>
-                  <th scope="col" className="px-5 py-3">Size</th>
-                  <th scope="col" className="px-5 py-3">Status</th>
-                  <th scope="col" className="px-5 py-3 text-right">Payload</th>
+                  <th scope="col" className="px-5 py-3">
+                    Time
+                  </th>
+                  <th scope="col" className="px-5 py-3">
+                    Dataset
+                  </th>
+                  <th scope="col" className="px-5 py-3">
+                    Method & Status
+                  </th>
+                  <th scope="col" className="px-5 py-3">
+                    Redacted URL
+                  </th>
+                  <th scope="col" className="px-5 py-3">
+                    Items & Page
+                  </th>
+                  <th scope="col" className="px-5 py-3">
+                    Size
+                  </th>
+                  <th scope="col" className="px-5 py-3">
+                    Status
+                  </th>
+                  <th scope="col" className="px-5 py-3 text-right">
+                    Payload
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
                 {filtered.map((resp) => {
                   const datasetLabel =
-                    labelByEndpoint.get(`${resp.httpMethod}_${resp.normalizedEndpoint}`) || 'API';
+                    labelByEndpoint.get(
+                      `${resp.httpMethod}_${resp.normalizedEndpoint}`,
+                    ) || "API";
                   const pag = resp.paginationMeta;
                   return (
-                    <tr key={resp.id} className="hover:bg-brand-50/35 transition">
+                    <tr
+                      key={resp.id}
+                      className="hover:bg-brand-50/35 transition"
+                    >
                       <td className="px-5 py-3 font-mono text-stone-500 whitespace-nowrap tabular-nums">
                         {new Date(resp.capturedAt).toLocaleTimeString()}
                       </td>
@@ -164,8 +199,8 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
                         <span
                           className={`font-bold tabular-nums ${
                             resp.httpStatus >= 200 && resp.httpStatus < 300
-                              ? 'text-brand-800'
-                              : 'text-amber-700'
+                              ? "text-brand-800"
+                              : "text-amber-700"
                           }`}
                         >
                           {resp.httpStatus}
@@ -188,7 +223,7 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
                         {pag?.currentPage && (
                           <span className="ml-1.5 px-1.5 py-0.5 rounded bg-stone-100 text-stone-700 font-mono text-[10px]">
                             p.{pag.currentPage}
-                            {pag.totalPages ? `/${pag.totalPages}` : ''}
+                            {pag.totalPages ? `/${pag.totalPages}` : ""}
                           </span>
                         )}
                       </td>
@@ -204,7 +239,11 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
                           onClick={() => setSelectedResponse(resp)}
                           className="inline-flex items-center gap-1 px-2.5 py-1 bg-stone-100 hover:bg-brand-100 text-obsidian-900 text-xs font-semibold rounded-lg transition"
                         >
-                          <Eye className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" /> Inspect
+                          <Eye
+                            className="w-3.5 h-3.5 text-brand-700"
+                            aria-hidden="true"
+                          />{" "}
+                          Inspect
                         </button>
                       </td>
                     </tr>
@@ -221,7 +260,7 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
           isOpen={Boolean(selectedResponse)}
           onClose={() => setSelectedResponse(null)}
           title={`${selectedResponse.httpMethod} ${selectedResponse.url} (${formatBytes(
-            selectedResponse.responseBytes
+            selectedResponse.responseBytes,
           )})`}
           data={selectedResponse.responseBody}
         />

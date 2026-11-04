@@ -1,15 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Header, DashboardTab } from './components/Header';
-import { Overview } from './pages/Overview';
-import { Sources } from './pages/Sources';
-import { Responses } from './pages/Responses';
-import { Records } from './pages/Records';
-import { Schemas } from './pages/Schemas';
-import { Exports } from './pages/Exports';
-import { Settings } from './pages/Settings';
-import { TabPickerModal } from './components/TabPickerModal';
-import { PaginationAssistantModal } from './components/PaginationAssistantModal';
-import { ToastProvider, useToast } from './components/ToastProvider';
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Header, DashboardTab } from "./components/Header";
+import { Overview } from "./pages/Overview";
+import { Sources } from "./pages/Sources";
+import { Responses } from "./pages/Responses";
+import { Records } from "./pages/Records";
+import { Schemas } from "./pages/Schemas";
+import { Exports } from "./pages/Exports";
+import { Settings } from "./pages/Settings";
+import { TabPickerModal } from "./components/TabPickerModal";
+import { PaginationAssistantModal } from "./components/PaginationAssistantModal";
+import { ToastProvider, useToast } from "./components/ToastProvider";
 import {
   activityRepo,
   calculateSessionMetrics,
@@ -19,7 +19,7 @@ import {
   schemaRepo,
   sessionRepo,
   sourceRepo,
-} from '../data/repositories';
+} from "../data/repositories";
 import {
   ActivityEvent,
   AutoPaginateConfig,
@@ -33,10 +33,13 @@ import {
   RawResponse,
   ScopeMode,
   SessionMetrics,
-} from '../shared/types';
-import { CaptureStateResponse, sendExtensionMessage } from '../messaging/protocol';
-import { generateFlattenedCsv } from '../export/csv';
-import { generateExportFilename } from '../export/filenames';
+} from "../shared/types";
+import {
+  CaptureStateResponse,
+  sendExtensionMessage,
+} from "../messaging/protocol";
+import { generateFlattenedCsv } from "../export/csv";
+import { generateExportFilename } from "../export/filenames";
 
 const EMPTY_METRICS: SessionMetrics = {
   responsesObserved: 0,
@@ -51,14 +54,16 @@ const EMPTY_METRICS: SessionMetrics = {
 const DashboardWorkspace: React.FC = () => {
   const { notify } = useToast();
 
-  const [currentTab, setCurrentTab] = useState<DashboardTab>('overview');
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [currentTab, setCurrentTab] = useState<DashboardTab>("overview");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null,
+  );
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [allSessions, setAllSessions] = useState<CaptureSession[]>([]);
-  const [status, setStatus] = useState<CaptureStatus>('idle');
-  const [autoPaginateState, setAutoPaginateState] = useState<AutoPaginateState | undefined>(
-    undefined
-  );
+  const [status, setStatus] = useState<CaptureStatus>("idle");
+  const [autoPaginateState, setAutoPaginateState] = useState<
+    AutoPaginateState | undefined
+  >(undefined);
 
   const [sources, setSources] = useState<EndpointSource[]>([]);
   const [responses, setResponses] = useState<RawResponse[]>([]);
@@ -70,9 +75,13 @@ const DashboardWorkspace: React.FC = () => {
 
   const [isTabPickerOpen, setIsTabPickerOpen] = useState(false);
   const [isAutoPaginateOpen, setIsAutoPaginateOpen] = useState(false);
-  const [autoPaginateSourceId, setAutoPaginateSourceId] = useState<string | undefined>(undefined);
-  const [recordsSourceFilter, setRecordsSourceFilter] = useState<string>('all');
-  const [exportsSourceFilter, setExportsSourceFilter] = useState<string | undefined>(undefined);
+  const [autoPaginateSourceId, setAutoPaginateSourceId] = useState<
+    string | undefined
+  >(undefined);
+  const [recordsSourceFilter, setRecordsSourceFilter] = useState<string>("all");
+  const [exportsSourceFilter, setExportsSourceFilter] = useState<
+    string | undefined
+  >(undefined);
 
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const [isReprocessing, setIsReprocessing] = useState(false);
@@ -80,8 +89,8 @@ const DashboardWorkspace: React.FC = () => {
   // Refs for detecting live system transitions without spamming initial load
   const initializedSessionRef = useRef<string | null>(null);
   const knownSourceIdsRef = useRef<Set<string>>(new Set());
-  const prevStatusRef = useRef<CaptureStatus>('idle');
-  const prevAutoStatusRef = useRef<string>('idle');
+  const prevStatusRef = useRef<CaptureStatus>("idle");
+  const prevAutoStatusRef = useRef<string>("idle");
 
   const refreshData = useCallback(
     async (options?: { silent?: boolean; forceSessionId?: string | null }) => {
@@ -94,7 +103,9 @@ const DashboardWorkspace: React.FC = () => {
         const [sessionsList, activeDbSession, bgStateRes] = await Promise.all([
           sessionRepo.getAllSessions(),
           sessionRepo.getActiveSession(),
-          sendExtensionMessage<undefined, CaptureStateResponse>('GET_CAPTURE_STATE'),
+          sendExtensionMessage<undefined, CaptureStateResponse>(
+            "GET_CAPTURE_STATE",
+          ),
         ]);
 
         setAllSessions(sessionsList);
@@ -105,31 +116,32 @@ const DashboardWorkspace: React.FC = () => {
 
           // Announce system auto-pagination completion
           if (
-            (prevAutoStatusRef.current === 'running' ||
-              prevAutoStatusRef.current === 'stopping') &&
-            nextAuto.status === 'completed'
+            (prevAutoStatusRef.current === "running" ||
+              prevAutoStatusRef.current === "stopping") &&
+            nextAuto.status === "completed"
           ) {
             const gained = Math.max(
               0,
-              nextAuto.currentUniqueRecords - nextAuto.initialUniqueRecords
+              nextAuto.currentUniqueRecords - nextAuto.initialUniqueRecords,
             );
             notify({
-              title: 'Multi-Page Fetch Completed',
+              title: "Multi-Page Fetch Completed",
               description:
                 nextAuto.message ||
                 `Fetched ${nextAuto.pagesAttempted} pages (${gained} new records).`,
-              variant: 'success',
-              actor: 'system',
+              variant: "success",
+              actor: "system",
             });
           } else if (
-            prevAutoStatusRef.current === 'running' &&
-            nextAuto.status === 'error'
+            prevAutoStatusRef.current === "running" &&
+            nextAuto.status === "error"
           ) {
             notify({
-              title: 'Multi-Page Fetch Stopped',
-              description: nextAuto.message || 'Could not advance further pages.',
-              variant: 'warning',
-              actor: 'system',
+              title: "Multi-Page Fetch Stopped",
+              description:
+                nextAuto.message || "Could not advance further pages.",
+              variant: "warning",
+              actor: "system",
             });
           }
           prevAutoStatusRef.current = nextAuto.status;
@@ -151,17 +163,20 @@ const DashboardWorkspace: React.FC = () => {
           currentSession = activeDbSession || sessionsList[0] || null;
         }
 
-        const nextStatus: CaptureStatus = currentSession?.status || 'idle';
+        const nextStatus: CaptureStatus = currentSession?.status || "idle";
 
         // System notification if debugger detached unexpectedly
-        if (prevStatusRef.current === 'recording' && nextStatus === 'detached') {
+        if (
+          prevStatusRef.current === "recording" &&
+          nextStatus === "detached"
+        ) {
           notify({
-            title: 'Target Tab Disconnected',
+            title: "Target Tab Disconnected",
             description:
               currentSession?.errorReason ||
-              'Chrome debugger detached from the target tab. All captured records are safely saved.',
-            variant: 'warning',
-            actor: 'system',
+              "Chrome debugger detached from the target tab. All captured records are safely saved.",
+            variant: "warning",
+            actor: "system",
           });
         }
         prevStatusRef.current = nextStatus;
@@ -191,16 +206,18 @@ const DashboardWorkspace: React.FC = () => {
           // Detect newly discovered API datasets during live capture
           if (initializedSessionRef.current !== currentSession.id) {
             initializedSessionRef.current = currentSession.id;
-            knownSourceIdsRef.current = new Set(fetchedSources.map((s) => s.id));
-          } else if (nextStatus === 'recording') {
+            knownSourceIdsRef.current = new Set(
+              fetchedSources.map((s) => s.id),
+            );
+          } else if (nextStatus === "recording") {
             for (const src of fetchedSources) {
               if (!knownSourceIdsRef.current.has(src.id)) {
                 knownSourceIdsRef.current.add(src.id);
                 notify({
                   title: `Discovered "${src.label}" API`,
-                  description: `${src.httpMethod} ${src.normalizedEndpoint.replace(/^https?:\/\/[^/]+/, '')}`,
-                  variant: 'info',
-                  actor: 'system',
+                  description: `${src.httpMethod} ${src.normalizedEndpoint.replace(/^https?:\/\/[^/]+/, "")}`,
+                  variant: "info",
+                  actor: "system",
                   durationMs: 3600,
                 });
               }
@@ -226,14 +243,14 @@ const DashboardWorkspace: React.FC = () => {
           setMetrics(EMPTY_METRICS);
         }
       } catch (err) {
-        console.error('Error refreshing dashboard data:', err);
+        console.error("Error refreshing dashboard data:", err);
       } finally {
         if (!silent) {
           setTimeout(() => setIsManualRefreshing(false), 350);
         }
       }
     },
-    [selectedSessionId, notify]
+    [selectedSessionId, notify],
   );
 
   useEffect(() => {
@@ -260,92 +277,98 @@ const DashboardWorkspace: React.FC = () => {
     originalUrl: string,
     allowedHostnames: string[],
     scopeMode: ScopeMode,
-    sessionLabel?: string
+    sessionLabel?: string,
   ) => {
     try {
-      setStatus('starting');
-      const res = await sendExtensionMessage<any, CaptureSession>('START_CAPTURE', {
-        tabId,
-        originalUrl,
-        allowedHostnames,
-        scopeMode,
-        label: sessionLabel,
-      });
+      setStatus("starting");
+      const res = await sendExtensionMessage<any, CaptureSession>(
+        "START_CAPTURE",
+        {
+          tabId,
+          originalUrl,
+          allowedHostnames,
+          scopeMode,
+          label: sessionLabel,
+        },
+      );
 
       if (res.success && res.data) {
         setSelectedSessionId(res.data.id);
         setSession(res.data);
-        setStatus('recording');
-        prevStatusRef.current = 'recording';
+        setStatus("recording");
+        prevStatusRef.current = "recording";
         await refreshData({ silent: true, forceSessionId: res.data.id });
 
         notify({
-          title: 'Live API Capture Active',
-          description: `Listening to JSON API responses on ${allowedHostnames[0] || 'selected tab'}.`,
-          variant: 'success',
-          actor: 'user',
+          title: "Live API Capture Active",
+          description: `Listening to JSON API responses on ${allowedHostnames[0] || "selected tab"}.`,
+          variant: "success",
+          actor: "user",
         });
       } else {
-        setStatus(session?.status || 'idle');
+        setStatus(session?.status || "idle");
         notify({
-          title: 'Could Not Attach to Tab',
+          title: "Could Not Attach to Tab",
           description:
             res.error ||
-            'Ensure the tab is a normal http/https webpage and DevTools is not blocking debugger attachment.',
-          variant: 'error',
-          actor: 'system',
+            "Ensure the tab is a normal http/https webpage and DevTools is not blocking debugger attachment.",
+          variant: "error",
+          actor: "system",
         });
       }
     } catch (err: any) {
-      setStatus(session?.status || 'idle');
+      setStatus(session?.status || "idle");
       notify({
-        title: 'Capture Initialization Failed',
-        description: err?.message || 'Unexpected error communicating with background worker.',
-        variant: 'error',
-        actor: 'system',
+        title: "Capture Initialization Failed",
+        description:
+          err?.message ||
+          "Unexpected error communicating with background worker.",
+        variant: "error",
+        actor: "system",
       });
     }
   };
 
   const handlePause = async () => {
     if (!session) return;
-    await sendExtensionMessage('PAUSE_CAPTURE', { sessionId: session.id });
-    setStatus('paused');
-    prevStatusRef.current = 'paused';
+    await sendExtensionMessage("PAUSE_CAPTURE", { sessionId: session.id });
+    setStatus("paused");
+    prevStatusRef.current = "paused";
     await refreshData({ silent: true });
     notify({
-      title: 'Capture Paused',
-      description: 'Incoming network responses are temporarily ignored until you resume.',
-      variant: 'info',
-      actor: 'user',
+      title: "Capture Paused",
+      description:
+        "Incoming network responses are temporarily ignored until you resume.",
+      variant: "info",
+      actor: "user",
     });
   };
 
   const handleResume = async () => {
     if (!session) return;
-    await sendExtensionMessage('RESUME_CAPTURE', { sessionId: session.id });
-    setStatus('recording');
-    prevStatusRef.current = 'recording';
+    await sendExtensionMessage("RESUME_CAPTURE", { sessionId: session.id });
+    setStatus("recording");
+    prevStatusRef.current = "recording";
     await refreshData({ silent: true });
     notify({
-      title: 'Capture Resumed',
-      description: 'Listening for new API responses and pages.',
-      variant: 'success',
-      actor: 'user',
+      title: "Capture Resumed",
+      description: "Listening for new API responses and pages.",
+      variant: "success",
+      actor: "user",
     });
   };
 
   const handleStop = async () => {
     if (!session) return;
-    await sendExtensionMessage('STOP_CAPTURE', { sessionId: session.id });
-    setStatus('stopped');
-    prevStatusRef.current = 'stopped';
+    await sendExtensionMessage("STOP_CAPTURE", { sessionId: session.id });
+    setStatus("stopped");
+    prevStatusRef.current = "stopped";
     await refreshData({ silent: true });
     notify({
-      title: 'Capture Session Completed',
+      title: "Capture Session Completed",
       description: `${metrics.uniqueRecords} unique records across ${metrics.endpointGroups} API datasets are ready to export.`,
-      variant: 'success',
-      actor: 'user',
+      variant: "success",
+      actor: "user",
     });
   };
 
@@ -354,16 +377,16 @@ const DashboardWorkspace: React.FC = () => {
     await sessionRepo.renameSession(session.id, newLabel.trim());
     await activityRepo.logEvent({
       sessionId: session.id,
-      actor: 'user',
-      category: 'session',
+      actor: "user",
+      category: "session",
       message: `Renamed session to "${newLabel.trim()}"`,
     });
     await refreshData({ silent: true });
     notify({
-      title: 'Session Renamed',
+      title: "Session Renamed",
       description: `Updated session label to "${newLabel.trim()}".`,
-      variant: 'success',
-      actor: 'user',
+      variant: "success",
+      actor: "user",
     });
   };
 
@@ -371,14 +394,17 @@ const DashboardWorkspace: React.FC = () => {
     if (!session) return;
     setIsReprocessing(true);
     try {
-      const res = await sendExtensionMessage('REPROCESS_SESSION', { sessionId: session.id });
+      const res = await sendExtensionMessage("REPROCESS_SESSION", {
+        sessionId: session.id,
+      });
       await refreshData({ silent: true });
       if (res.success) {
         notify({
-          title: 'Datasets Re-Extracted',
-          description: 'Rebuilt consolidated records and schemas from saved raw responses.',
-          variant: 'success',
-          actor: 'user',
+          title: "Datasets Re-Extracted",
+          description:
+            "Rebuilt consolidated records and schemas from saved raw responses.",
+          variant: "success",
+          actor: "user",
         });
       }
     } finally {
@@ -387,13 +413,13 @@ const DashboardWorkspace: React.FC = () => {
   };
 
   const handleFocusTargetTab = async () => {
-    const res = await sendExtensionMessage('FOCUS_TARGET_TAB');
+    const res = await sendExtensionMessage("FOCUS_TARGET_TAB");
     if (!res.success) {
       notify({
-        title: 'Target Tab Not Open',
-        description: res.error || 'The captured tab may have been closed.',
-        variant: 'warning',
-        actor: 'system',
+        title: "Target Tab Not Open",
+        description: res.error || "The captured tab may have been closed.",
+        variant: "warning",
+        actor: "system",
       });
     }
   };
@@ -401,28 +427,30 @@ const DashboardWorkspace: React.FC = () => {
   const handleOpenSidepanel = async (windowId?: number) => {
     try {
       if (
-        typeof chrome !== 'undefined' &&
+        typeof chrome !== "undefined" &&
         chrome.sidePanel?.open &&
-        typeof windowId === 'number'
+        typeof windowId === "number"
       ) {
         await chrome.sidePanel.open({ windowId });
         return;
       }
-      const res = await sendExtensionMessage('OPEN_SIDEPANEL', { windowId });
+      const res = await sendExtensionMessage("OPEN_SIDEPANEL", { windowId });
       if (!res.success) {
         notify({
-          title: 'Side Panel Notice',
-          description: res.error || 'Click the extension icon in Chrome toolbar to toggle Side Panel.',
-          variant: 'info',
-          actor: 'system',
+          title: "Side Panel Notice",
+          description:
+            res.error ||
+            "Click the extension icon in Chrome toolbar to toggle Side Panel.",
+          variant: "info",
+          actor: "system",
         });
       }
     } catch (err: any) {
       notify({
-        title: 'Could Not Open Side Panel',
-        description: err?.message || 'Open the Side Panel from Chrome toolbar.',
-        variant: 'warning',
-        actor: 'system',
+        title: "Could Not Open Side Panel",
+        description: err?.message || "Open the Side Panel from Chrome toolbar.",
+        variant: "warning",
+        actor: "system",
       });
     }
   };
@@ -433,46 +461,50 @@ const DashboardWorkspace: React.FC = () => {
   };
 
   const handleStartAutoPaginate = async (config: AutoPaginateConfig) => {
-    const res = await sendExtensionMessage<AutoPaginateConfig, AutoPaginateState>(
-      'START_AUTO_PAGINATE',
-      config
-    );
+    const res = await sendExtensionMessage<
+      AutoPaginateConfig,
+      AutoPaginateState
+    >("START_AUTO_PAGINATE", config);
     if (res.success && res.data) {
       setAutoPaginateState(res.data);
       prevAutoStatusRef.current = res.data.status;
       notify({
-        title: 'Multi-Page Fetch Started',
+        title: "Multi-Page Fetch Started",
         description: `Walking up to ${config.maxPages} pages automatically.`,
-        variant: 'info',
-        actor: 'user',
+        variant: "info",
+        actor: "user",
       });
     } else {
       notify({
-        title: 'Cannot Start Multi-Page Fetch',
-        description: res.error || 'Ensure capture is actively recording on the target tab.',
-        variant: 'error',
-        actor: 'system',
+        title: "Cannot Start Multi-Page Fetch",
+        description:
+          res.error ||
+          "Ensure capture is actively recording on the target tab.",
+        variant: "error",
+        actor: "system",
       });
     }
   };
 
   const handleStopAutoPaginate = async () => {
-    const res = await sendExtensionMessage<undefined, AutoPaginateState>('STOP_AUTO_PAGINATE');
+    const res = await sendExtensionMessage<undefined, AutoPaginateState>(
+      "STOP_AUTO_PAGINATE",
+    );
     if (res.success && res.data) {
       setAutoPaginateState(res.data);
     }
     notify({
-      title: 'Stopping Multi-Page Fetch',
-      description: 'Halting after the in-flight page request finishes.',
-      variant: 'info',
-      actor: 'user',
+      title: "Stopping Multi-Page Fetch",
+      description: "Halting after the in-flight page request finishes.",
+      variant: "info",
+      actor: "user",
     });
   };
 
   const handleNavigateTab = (tab: DashboardTab, sourceId?: string) => {
-    if (tab === 'records') {
-      setRecordsSourceFilter(sourceId || 'all');
-    } else if (tab === 'exports') {
+    if (tab === "records") {
+      setRecordsSourceFilter(sourceId || "all");
+    } else if (tab === "exports") {
       setExportsSourceFilter(sourceId);
     }
     setCurrentTab(tab);
@@ -483,9 +515,9 @@ const DashboardWorkspace: React.FC = () => {
     if (sourceRecords.length === 0) {
       notify({
         title: `No records in "${source.label}" yet`,
-        description: 'Capture or paginate this API first to export records.',
-        variant: 'warning',
-        actor: 'user',
+        description: "Capture or paginate this API first to export records.",
+        variant: "warning",
+        actor: "user",
       });
       return;
     }
@@ -495,22 +527,22 @@ const DashboardWorkspace: React.FC = () => {
       {
         includeBom: true,
         defendFormulaInjection: true,
-        nullValueRepresentation: '',
-        arrayFormat: 'readable',
-        headerStyle: 'readable',
-      }
+        nullValueRepresentation: "",
+        arrayFormat: "readable",
+        headerStyle: "readable",
+      },
     );
 
     const fname = generateExportFilename({
       label: source.label,
-      site: session?.allowedHostnames[0] || 'site',
-      extension: 'csv',
+      site: session?.allowedHostnames[0] || "site",
+      extension: "csv",
       includeTime: false,
     });
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
     a.download = fname;
     document.body.appendChild(a);
@@ -521,8 +553,8 @@ const DashboardWorkspace: React.FC = () => {
     if (session) {
       await activityRepo.logEvent({
         sessionId: session.id,
-        actor: 'user',
-        category: 'export',
+        actor: "user",
+        category: "export",
         message: `Quick-exported "${source.label}" (${sourceRecords.length} rows) as ${fname}`,
       });
     }
@@ -530,8 +562,8 @@ const DashboardWorkspace: React.FC = () => {
     notify({
       title: `Downloaded ${fname}`,
       description: `Exported ${sourceRecords.length} "${source.label}" records to CSV.`,
-      variant: 'success',
-      actor: 'user',
+      variant: "success",
+      actor: "user",
     });
   };
 
@@ -562,7 +594,7 @@ const DashboardWorkspace: React.FC = () => {
         tabIndex={-1}
         className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 focus:outline-none"
       >
-        {currentTab === 'overview' && (
+        {currentTab === "overview" && (
           <Overview
             session={session}
             sources={sources}
@@ -578,40 +610,40 @@ const DashboardWorkspace: React.FC = () => {
           />
         )}
 
-        {currentTab === 'sources' && (
+        {currentTab === "sources" && (
           <Sources
             sources={sources}
             rawResponses={responses}
             sessionId={session?.id}
-            canAutoPaginate={status === 'recording' || status === 'paused'}
+            canAutoPaginate={status === "recording" || status === "paused"}
             onRefreshSources={() => refreshData({ silent: true })}
             onReprocess={handleReprocess}
             onOpenAutoPaginate={(srcId) => handleOpenAutoPaginate(srcId)}
-            onViewSourceRecords={(srcId) => handleNavigateTab('records', srcId)}
+            onViewSourceRecords={(srcId) => handleNavigateTab("records", srcId)}
             isReprocessing={isReprocessing}
           />
         )}
 
-        {currentTab === 'responses' && (
+        {currentTab === "responses" && (
           <Responses responses={responses} sources={sources} />
         )}
 
-        {currentTab === 'records' && (
+        {currentTab === "records" && (
           <Records
             records={records}
             sources={sources}
             initialSourceFilter={recordsSourceFilter}
             onExportFiltered={(srcId) =>
-              handleNavigateTab('exports', srcId === 'all' ? undefined : srcId)
+              handleNavigateTab("exports", srcId === "all" ? undefined : srcId)
             }
           />
         )}
 
-        {currentTab === 'schemas' && (
+        {currentTab === "schemas" && (
           <Schemas schemas={schemas} sources={sources} />
         )}
 
-        {currentTab === 'exports' && (
+        {currentTab === "exports" && (
           <Exports
             session={session}
             sources={sources}
@@ -622,7 +654,7 @@ const DashboardWorkspace: React.FC = () => {
           />
         )}
 
-        {currentTab === 'settings' && (
+        {currentTab === "settings" && (
           <Settings
             session={session}
             onSessionCleared={async () => {

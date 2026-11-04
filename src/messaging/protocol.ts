@@ -4,21 +4,29 @@ import {
   CaptureSession,
   CaptureStatus,
   ScopeMode,
-} from '../shared/types';
+} from "../shared/types";
 
 export type MessageType =
-  | 'START_CAPTURE'
-  | 'PAUSE_CAPTURE'
-  | 'RESUME_CAPTURE'
-  | 'STOP_CAPTURE'
-  | 'GET_CAPTURE_STATE'
-  | 'REPROCESS_SESSION'
-  | 'START_AUTO_PAGINATE'
-  | 'STOP_AUTO_PAGINATE'
-  | 'GET_AUTO_PAGINATE_STATE'
-  | 'FOCUS_TARGET_TAB'
-  | 'OPEN_DASHBOARD'
-  | 'OPEN_SIDEPANEL';
+  | "START_CAPTURE"
+  | "PAUSE_CAPTURE"
+  | "RESUME_CAPTURE"
+  | "STOP_CAPTURE"
+  | "GET_CAPTURE_STATE"
+  | "REPROCESS_SESSION"
+  | "START_AUTO_PAGINATE"
+  | "STOP_AUTO_PAGINATE"
+  | "GET_AUTO_PAGINATE_STATE"
+  | "FOCUS_TARGET_TAB"
+  | "OPEN_DASHBOARD"
+  | "OPEN_SIDEPANEL"
+  | "SPHERE_GET_CONFIG"
+  | "SPHERE_SAVE_CONFIG"
+  | "SPHERE_FLUSH_QUEUE"
+  | "SPHERE_GET_QUEUE_STATS"
+  | "SPHERE_RETRY_FAILED"
+  | "SPHERE_CLEAR_QUEUE"
+  | "SPHERE_TEST_CONNECTION"
+  | "BANDAGO_TRIGGER_POLL";
 
 export interface StartCapturePayload {
   tabId: number;
@@ -53,15 +61,27 @@ export interface ApiResponse<T = unknown> {
 
 export async function sendExtensionMessage<T = unknown, R = unknown>(
   type: MessageType,
-  payload?: T
+  payload?: T,
 ): Promise<ApiResponse<R>> {
   try {
-    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
-      return { success: false, error: 'Chrome extension runtime is not active in standalone preview.' };
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return {
+        success: false,
+        error: "Chrome extension runtime is not active in standalone preview.",
+      };
     }
     const response = await chrome.runtime.sendMessage({ type, payload });
-    return response || { success: false, error: 'No response from extension background service' };
+    return (
+      response || {
+        success: false,
+        error: "No response from extension background service",
+      }
+    );
   } catch (err: any) {
-    return { success: false, error: err.message || 'Failed to communicate with extension service worker' };
+    return {
+      success: false,
+      error:
+        err.message || "Failed to communicate with extension service worker",
+    };
   }
 }

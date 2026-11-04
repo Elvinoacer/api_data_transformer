@@ -1,49 +1,106 @@
-import { defineConfig, Plugin } from 'vite';
-import react from '@vitejs/plugin-react';
-import { resolve } from 'path';
+import { defineConfig, Plugin } from "vite";
+import react from "@vitejs/plugin-react";
+import { resolve } from "path";
 
 function mockApiCatalogPlugin(): Plugin {
   return {
-    name: 'mock-api-catalog',
+    name: "mock-api-catalog",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (!req.url?.startsWith('/api/')) {
+        if (!req.url?.startsWith("/api/")) {
           return next();
         }
 
-        const parsedUrl = new URL(req.url, 'http://localhost');
+        const parsedUrl = new URL(req.url, "http://localhost");
         const pathname = parsedUrl.pathname;
 
         const handledPaths = new Set([
-          '/api/medications',
-          '/api/medications/cursor',
-          '/api/medicines',
-          '/api/customers',
-          '/api/orders',
+          "/api/medications",
+          "/api/medications/cursor",
+          "/api/medicines",
+          "/api/customers",
+          "/api/orders",
+          "/api/integrations/bandago/sync",
         ]);
 
         if (!handledPaths.has(pathname)) {
           return next();
         }
 
-        const page = Math.max(1, parseInt(parsedUrl.searchParams.get('page') || '1', 10));
-        const search = (parsedUrl.searchParams.get('q') || '').toLowerCase();
+        if (req.method === "OPTIONS") {
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+          res.setHeader(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Pharmacy-Source",
+          );
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
 
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        if (pathname === "/api/integrations/bandago/sync") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            try {
+              const auth = req.headers["authorization"];
+              if (auth && auth.startsWith("Bearer invalid")) {
+                res.statusCode = 401;
+                res.end(JSON.stringify({ error: "Unauthorized" }));
+                return;
+              }
+              const parsed = JSON.parse(body || "{}");
+              const items = Array.isArray(parsed.items) ? parsed.items : [];
+              res.setHeader("Content-Type", "application/json");
+              res.setHeader("Access-Control-Allow-Origin", "*");
+              res.end(
+                JSON.stringify({
+                  success: true,
+                  syncedCount: items.length,
+                  timestamp: new Date().toISOString(),
+                }),
+              );
+            } catch (err: any) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: err.message }));
+            }
+          });
+          return;
+        }
+
+        const page = Math.max(
+          1,
+          parseInt(parsedUrl.searchParams.get("page") || "1", 10),
+        );
+        const search = (parsedUrl.searchParams.get("q") || "").toLowerCase();
+
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Access-Control-Allow-Origin", "*");
 
         // 1. Customers API (/api/customers) — 120 records across 4 pages
-        if (pathname === '/api/customers') {
-          const limit = parseInt(parsedUrl.searchParams.get('limit') || '30', 10);
-          const tiers = ['Platinum', 'Gold', 'Silver', 'Standard'];
-          const cities = ['Nairobi', 'Dar es Salaam', 'Kampala', 'Kigali', 'Accra'];
+        if (pathname === "/api/customers") {
+          const limit = parseInt(
+            parsedUrl.searchParams.get("limit") || "30",
+            10,
+          );
+          const tiers = ["Platinum", "Gold", "Silver", "Standard"];
+          const cities = [
+            "Nairobi",
+            "Dar es Salaam",
+            "Kampala",
+            "Kigali",
+            "Accra",
+          ];
 
           const allCustomers = Array.from({ length: 120 }, (_, idx) => {
             const id = idx + 1;
             const tier = tiers[idx % tiers.length];
             const city = cities[idx % cities.length];
             return {
-              id: `cust-${String(id).padStart(3, '0')}`,
+              id: `cust-${String(id).padStart(3, "0")}`,
               fullName: `Customer Clinic #${id}`,
               email: `procurement${id}@healthpartner.org`,
               tier,
@@ -53,7 +110,7 @@ function mockApiCatalogPlugin(): Plugin {
                 city,
                 zone: `Sector ${(id % 6) + 1}`,
               },
-              segments: [tier.toLowerCase(), 'verified-buyer'],
+              segments: [tier.toLowerCase(), "verified-buyer"],
             };
           });
 
@@ -62,7 +119,7 @@ function mockApiCatalogPlugin(): Plugin {
                 (c) =>
                   c.fullName.toLowerCase().includes(search) ||
                   c.address.city.toLowerCase().includes(search) ||
-                  c.tier.toLowerCase().includes(search)
+                  c.tier.toLowerCase().includes(search),
               )
             : allCustomers;
 
@@ -79,19 +136,27 @@ function mockApiCatalogPlugin(): Plugin {
                 totalPages,
               },
               facets: [
-                { key: 'Platinum', count: 30 },
-                { key: 'Gold', count: 30 },
+                { key: "Platinum", count: 30 },
+                { key: "Gold", count: 30 },
               ],
               customers: pageItems,
-            })
+            }),
           );
           return;
         }
 
         // 2. Orders API (/api/orders) — 90 records across 3 pages
-        if (pathname === '/api/orders') {
-          const limit = parseInt(parsedUrl.searchParams.get('limit') || '30', 10);
-          const statuses = ['Fulfilled', 'Processing', 'In Transit', 'Pending Approval'];
+        if (pathname === "/api/orders") {
+          const limit = parseInt(
+            parsedUrl.searchParams.get("limit") || "30",
+            10,
+          );
+          const statuses = [
+            "Fulfilled",
+            "Processing",
+            "In Transit",
+            "Pending Approval",
+          ];
 
           const allOrders = Array.from({ length: 90 }, (_, idx) => {
             const id = idx + 1;
@@ -101,7 +166,9 @@ function mockApiCatalogPlugin(): Plugin {
               status: statuses[idx % statuses.length],
               lineItemsCount: (id % 8) + 1,
               totalUsd: Number((85 + ((id * 37.5) % 1400)).toFixed(2)),
-              orderedAt: new Date(Date.now() - id * 3600_000 * 6).toISOString().slice(0, 10),
+              orderedAt: new Date(Date.now() - id * 3600_000 * 6)
+                .toISOString()
+                .slice(0, 10),
             };
           });
 
@@ -110,7 +177,7 @@ function mockApiCatalogPlugin(): Plugin {
                 (o) =>
                   o.orderId.toLowerCase().includes(search) ||
                   o.customerName.toLowerCase().includes(search) ||
-                  o.status.toLowerCase().includes(search)
+                  o.status.toLowerCase().includes(search),
               )
             : allOrders;
 
@@ -127,19 +194,19 @@ function mockApiCatalogPlugin(): Plugin {
                 totalPages,
               },
               orders: pageItems,
-            })
+            }),
           );
           return;
         }
 
         // 3. Medicines / Medications API (/api/medicines, /api/medications, /api/medications/cursor)
-        const limit = parseInt(parsedUrl.searchParams.get('limit') || '50', 10);
+        const limit = parseInt(parsedUrl.searchParams.get("limit") || "50", 10);
         const categories = [
-          'analgesic',
-          'antibiotic',
-          'antipyretic',
-          'antihistamine',
-          'cardiovascular',
+          "analgesic",
+          "antibiotic",
+          "antipyretic",
+          "antihistamine",
+          "cardiovascular",
         ];
         const allItems = Array.from({ length: 250 }, (_, i) => {
           const id = i + 1;
@@ -150,11 +217,11 @@ function mockApiCatalogPlugin(): Plugin {
             category: cat,
             strength: {
               value: ((id * 25) % 500) + 50,
-              unit: 'mg',
+              unit: "mg",
             },
             price: Number((10 + ((id * 1.5) % 90)).toFixed(2)),
             inStock: id % 7 !== 0,
-            tags: [cat, 'oral', 'essential'],
+            tags: [cat, "oral", "essential"],
           };
         });
 
@@ -162,7 +229,7 @@ function mockApiCatalogPlugin(): Plugin {
           ? allItems.filter(
               (item) =>
                 item.name.toLowerCase().includes(search) ||
-                item.category.toLowerCase().includes(search)
+                item.category.toLowerCase().includes(search),
             )
           : allItems;
 
@@ -170,15 +237,17 @@ function mockApiCatalogPlugin(): Plugin {
         const pageItems = filtered.slice(startIndex, startIndex + limit);
         const totalPages = Math.max(1, Math.ceil(filtered.length / limit));
 
-        if (pathname === '/api/medications/cursor') {
+        if (pathname === "/api/medications/cursor") {
           const nextCursor =
-            startIndex + limit < filtered.length ? `cursor_${startIndex + limit}` : null;
+            startIndex + limit < filtered.length
+              ? `cursor_${startIndex + limit}`
+              : null;
           res.end(
             JSON.stringify({
               results: pageItems,
               nextCursor,
               total: filtered.length,
-            })
+            }),
           );
           return;
         }
@@ -193,7 +262,7 @@ function mockApiCatalogPlugin(): Plugin {
               totalItems: filtered.length,
               totalPages,
             },
-          })
+          }),
         );
       });
     },
@@ -203,24 +272,24 @@ function mockApiCatalogPlugin(): Plugin {
 export default defineConfig({
   plugins: [react(), mockApiCatalogPlugin()],
   build: {
-    outDir: 'dist',
+    outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        dashboard: resolve(__dirname, 'dashboard.html'),
-        sidepanel: resolve(__dirname, 'sidepanel.html'),
-        demo: resolve(__dirname, 'demo.html'),
-        background: resolve(__dirname, 'src/background/service-worker.ts'),
+        dashboard: resolve(__dirname, "dashboard.html"),
+        sidepanel: resolve(__dirname, "sidepanel.html"),
+        demo: resolve(__dirname, "demo.html"),
+        background: resolve(__dirname, "src/background/service-worker.ts"),
       },
       output: {
         entryFileNames: (chunkInfo) => {
-          if (chunkInfo.name === 'background') {
-            return 'background.js';
+          if (chunkInfo.name === "background") {
+            return "background.js";
           }
-          return 'assets/[name]-[hash].js';
+          return "assets/[name]-[hash].js";
         },
-        chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash].[ext]',
+        chunkFileNames: "assets/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash].[ext]",
       },
     },
   },

@@ -1,13 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { ModalDialog } from './ModalDialog';
+import React, { useState, useEffect } from "react";
+import { ModalDialog } from "./ModalDialog";
 import {
   AutoPaginateConfig,
   AutoPaginateMode,
   AutoPaginateState,
   CaptureStatus,
   EndpointSource,
-} from '../../shared/types';
-import { getMissingPages } from '../../extraction/pagination-detector';
+} from "../../shared/types";
+import { getMissingPages } from "../../extraction/pagination-detector";
 import {
   MousePointerClick,
   Link2,
@@ -17,7 +17,7 @@ import {
   Loader2,
   CheckCircle2,
   Sparkles,
-} from 'lucide-react';
+} from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -43,12 +43,12 @@ export const PaginationAssistantModal: React.FC<Props> = ({
   onStopAutoPaginate,
 }) => {
   const [selectedSourceId, setSelectedSourceId] = useState<string>(
-    initialSourceId || sources[0]?.id || ''
+    initialSourceId || sources[0]?.id || "",
   );
-  const [mode, setMode] = useState<AutoPaginateMode>('dom_click');
+  const [mode, setMode] = useState<AutoPaginateMode>("dom_click");
   const [delaySeconds, setDelaySeconds] = useState<number>(1.8);
   const [maxPages, setMaxPages] = useState<number>(15);
-  const [customSelector, setCustomSelector] = useState<string>('');
+  const [customSelector, setCustomSelector] = useState<string>("");
 
   useEffect(() => {
     if (initialSourceId) {
@@ -62,9 +62,12 @@ export const PaginationAssistantModal: React.FC<Props> = ({
   const pag = selectedSource?.pagination;
   const missingPages = getMissingPages(pag);
   const isRunning =
-    autoPaginateState?.status === 'running' || autoPaginateState?.status === 'stopping';
+    autoPaginateState?.status === "running" ||
+    autoPaginateState?.status === "stopping";
   const canUseApiFetch = Boolean(
-    pag && (pag.pageParamName || pag.nextUrl) && selectedSource?.httpMethod === 'GET'
+    pag &&
+    (pag.pageParamName || pag.nextUrl) &&
+    selectedSource?.httpMethod === "GET",
   );
 
   // Recommend remaining pages count automatically when known
@@ -117,7 +120,7 @@ export const PaginationAssistantModal: React.FC<Props> = ({
           ) : (
             <button
               type="button"
-              disabled={status !== 'recording' || !sessionId}
+              disabled={status !== "recording" || !sessionId}
               onClick={handleStart}
               className="btn-lime inline-flex items-center gap-2 px-5 py-2 bg-brand-400 hover:bg-brand-300 text-obsidian-950 border border-brand-500 text-xs font-bold rounded-xl shadow-lime-glow transition disabled:opacity-50"
             >
@@ -129,38 +132,51 @@ export const PaginationAssistantModal: React.FC<Props> = ({
       }
     >
       <div className="p-6 space-y-5">
-        {status !== 'recording' && (
+        {status !== "recording" && (
           <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 font-medium">
-            Capture must be actively <strong>Recording</strong> to fetch additional pages. Resume or start capture first.
+            Capture must be actively <strong>Recording</strong> to fetch
+            additional pages. Resume or start capture first.
           </div>
         )}
 
         {/* Live Progress Banner when running or recently completed */}
-        {autoPaginateState && autoPaginateState.status !== 'idle' && (
+        {autoPaginateState && autoPaginateState.status !== "idle" && (
           <div
             className={`p-4 rounded-xl border ${
               isRunning
-                ? 'bg-obsidian-900 text-white border-obsidian-800'
-                : 'bg-brand-50 border-brand-300 text-obsidian-900'
+                ? "bg-obsidian-900 text-white border-obsidian-800"
+                : "bg-brand-50 border-brand-300 text-obsidian-900"
             }`}
           >
             <div className="flex items-center justify-between gap-3 mb-2">
               <div className="flex items-center gap-2 text-xs font-bold">
                 {isRunning ? (
-                  <Loader2 className="w-4 h-4 text-brand-400 animate-spin" aria-hidden="true" />
+                  <Loader2
+                    className="w-4 h-4 text-brand-400 animate-spin"
+                    aria-hidden="true"
+                  />
                 ) : (
-                  <CheckCircle2 className="w-4 h-4 text-brand-700" aria-hidden="true" />
+                  <CheckCircle2
+                    className="w-4 h-4 text-brand-700"
+                    aria-hidden="true"
+                  />
                 )}
                 <span>{autoPaginateState.message}</span>
               </div>
               <span
                 className={`text-xs font-mono font-bold tabular-nums px-2 py-0.5 rounded-md ${
                   isRunning
-                    ? 'bg-brand-400 text-obsidian-950'
-                    : 'bg-brand-200 text-brand-950'
+                    ? "bg-brand-400 text-obsidian-950"
+                    : "bg-brand-200 text-brand-950"
                 }`}
               >
-                +{Math.max(0, autoPaginateState.currentUniqueRecords - autoPaginateState.initialUniqueRecords)} unique
+                +
+                {Math.max(
+                  0,
+                  autoPaginateState.currentUniqueRecords -
+                    autoPaginateState.initialUniqueRecords,
+                )}{" "}
+                unique
               </span>
             </div>
             {autoPaginateState.maxPages > 0 && (
@@ -199,27 +215,37 @@ export const PaginationAssistantModal: React.FC<Props> = ({
               ))}
             </select>
 
-            {pag && (pag.totalPages || pag.totalRecords || pag.observedPages.length > 0) && (
-              <div className="mt-2.5 p-3 rounded-xl bg-brand-50/70 border border-brand-200 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 text-brand-950">
-                  <Sparkles className="w-4 h-4 text-brand-700" aria-hidden="true" />
-                  <span>
-                    Observed pages:{' '}
-                    <strong className="font-mono">
-                      {pag.observedPages.length > 0 ? pag.observedPages.join(', ') : '1'}
-                    </strong>
-                    {pag.totalPages ? ` of ${pag.totalPages}` : ''}
-                    {pag.totalRecords ? ` (${pag.totalRecords} total items reported by API)` : ''}
-                  </span>
+            {pag &&
+              (pag.totalPages ||
+                pag.totalRecords ||
+                pag.observedPages.length > 0) && (
+                <div className="mt-2.5 p-3 rounded-xl bg-brand-50/70 border border-brand-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 text-brand-950">
+                    <Sparkles
+                      className="w-4 h-4 text-brand-700"
+                      aria-hidden="true"
+                    />
+                    <span>
+                      Observed pages:{" "}
+                      <strong className="font-mono">
+                        {pag.observedPages.length > 0
+                          ? pag.observedPages.join(", ")
+                          : "1"}
+                      </strong>
+                      {pag.totalPages ? ` of ${pag.totalPages}` : ""}
+                      {pag.totalRecords
+                        ? ` (${pag.totalRecords} total items reported by API)`
+                        : ""}
+                    </span>
+                  </div>
+                  {missingPages.length > 0 && (
+                    <span className="font-mono text-[11px] font-bold bg-white border border-brand-300 text-brand-900 px-2 py-0.5 rounded-md">
+                      Missing: {missingPages.slice(0, 8).join(", ")}
+                      {missingPages.length > 8 ? "…" : ""}
+                    </span>
+                  )}
                 </div>
-                {missingPages.length > 0 && (
-                  <span className="font-mono text-[11px] font-bold bg-white border border-brand-300 text-brand-900 px-2 py-0.5 rounded-md">
-                    Missing: {missingPages.slice(0, 8).join(', ')}
-                    {missingPages.length > 8 ? '…' : ''}
-                  </span>
-                )}
-              </div>
-            )}
+              )}
           </div>
         )}
 
@@ -231,26 +257,30 @@ export const PaginationAssistantModal: React.FC<Props> = ({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             {[
               {
-                id: 'dom_click' as AutoPaginateMode,
-                title: 'Auto-Click Next',
-                desc: 'Clicks the website’s Next / Load More button page by page. Works with cursors, POST & SPAs.',
-                icon: <MousePointerClick className="w-4 h-4" aria-hidden="true" />,
+                id: "dom_click" as AutoPaginateMode,
+                title: "Auto-Click Next",
+                desc: "Clicks the website’s Next / Load More button page by page. Works with cursors, POST & SPAs.",
+                icon: (
+                  <MousePointerClick className="w-4 h-4" aria-hidden="true" />
+                ),
                 disabled: false,
               },
               {
-                id: 'api_fetch' as AutoPaginateMode,
-                title: 'Direct API Pages',
+                id: "api_fetch" as AutoPaginateMode,
+                title: "Direct API Pages",
                 desc: canUseApiFetch
-                  ? 'Requests remaining ?page= / next URLs directly inside the tab.'
-                  : 'Available when a GET endpoint uses ?page=, ?offset=, or next links.',
+                  ? "Requests remaining ?page= / next URLs directly inside the tab."
+                  : "Available when a GET endpoint uses ?page=, ?offset=, or next links.",
                 icon: <Link2 className="w-4 h-4" aria-hidden="true" />,
                 disabled: !canUseApiFetch,
               },
               {
-                id: 'scroll' as AutoPaginateMode,
-                title: 'Infinite Scroll',
-                desc: 'Scrolls downward smoothly to trigger lazy-loaded feed responses.',
-                icon: <ArrowDownCircle className="w-4 h-4" aria-hidden="true" />,
+                id: "scroll" as AutoPaginateMode,
+                title: "Infinite Scroll",
+                desc: "Scrolls downward smoothly to trigger lazy-loaded feed responses.",
+                icon: (
+                  <ArrowDownCircle className="w-4 h-4" aria-hidden="true" />
+                ),
                 disabled: false,
               },
             ].map((opt) => {
@@ -264,18 +294,24 @@ export const PaginationAssistantModal: React.FC<Props> = ({
                   aria-pressed={active}
                   className={`text-left p-3.5 rounded-xl border transition flex flex-col justify-between ${
                     opt.disabled
-                      ? 'opacity-45 cursor-not-allowed border-stone-200 bg-stone-50'
+                      ? "opacity-45 cursor-not-allowed border-stone-200 bg-stone-50"
                       : active
-                      ? 'border-brand-600 bg-brand-50/80 ring-1 ring-brand-600'
-                      : 'border-stone-200 hover:border-stone-300 bg-white'
+                        ? "border-brand-600 bg-brand-50/80 ring-1 ring-brand-600"
+                        : "border-stone-200 hover:border-stone-300 bg-white"
                   }`}
                 >
                   <div>
                     <div className="flex items-center gap-2 font-bold text-xs text-obsidian-900 mb-1">
-                      <span className={active ? 'text-brand-700' : 'text-stone-500'}>{opt.icon}</span>
+                      <span
+                        className={active ? "text-brand-700" : "text-stone-500"}
+                      >
+                        {opt.icon}
+                      </span>
                       {opt.title}
                     </div>
-                    <p className="text-[11px] text-stone-600 leading-relaxed">{opt.desc}</p>
+                    <p className="text-[11px] text-stone-600 leading-relaxed">
+                      {opt.desc}
+                    </p>
                   </div>
                 </button>
               );
@@ -322,13 +358,15 @@ export const PaginationAssistantModal: React.FC<Props> = ({
               min={1}
               max={200}
               value={maxPages}
-              onChange={(e) => setMaxPages(Math.max(1, parseInt(e.target.value || '10', 10)))}
+              onChange={(e) =>
+                setMaxPages(Math.max(1, parseInt(e.target.value || "10", 10)))
+              }
               className="w-full px-3 py-1.5 bg-stone-50 border border-stone-300 rounded-xl text-xs font-mono font-semibold text-obsidian-900"
             />
           </div>
         </div>
 
-        {mode === 'dom_click' && (
+        {mode === "dom_click" && (
           <div>
             <label
               htmlFor="paginate-custom-selector"

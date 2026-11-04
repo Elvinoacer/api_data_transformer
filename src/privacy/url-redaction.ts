@@ -1,11 +1,11 @@
-import { DEFAULT_SETTINGS } from '../shared/constants';
+import { DEFAULT_SETTINGS } from "../shared/constants";
 
 /**
  * Redacts sensitive query parameters from a URL while keeping non-sensitive parameters.
  */
 export function redactSensitiveUrl(
   urlStr: string,
-  sensitiveParams: string[] = DEFAULT_SETTINGS.sensitiveUrlParams
+  sensitiveParams: string[] = DEFAULT_SETTINGS.sensitiveUrlParams,
 ): string {
   try {
     const parsed = new URL(urlStr);
@@ -14,11 +14,11 @@ export function redactSensitiveUrl(
 
     for (const [key] of Array.from(params.entries())) {
       if (sensitiveSet.has(key.toLowerCase()) || isLikelySensitiveKey(key)) {
-        params.set(key, '[REDACTED]');
+        params.set(key, "[REDACTED]");
       }
     }
 
-    parsed.search = params.toString() ? `?${params.toString()}` : '';
+    parsed.search = params.toString() ? `?${params.toString()}` : "";
     return parsed.toString();
   } catch {
     return urlStr;
@@ -30,7 +30,10 @@ function isDynamicIdSegment(seg: string): boolean {
   // Pure numeric IDs (e.g. /customers/1042)
   if (/^\d+$/.test(seg)) return true;
   // Standard UUIDs
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return true;
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)
+  )
+    return true;
   // 24-char MongoDB ObjectIds or long hex hashes
   if (/^[0-9a-f]{24,64}$/i.test(seg)) return true;
   return false;
@@ -42,15 +45,18 @@ function isDynamicIdSegment(seg: string): boolean {
  * - normalizes numeric/UUID/hex path IDs into `:id` so detail calls group cleanly
  * - appends `#OperationName` for GraphQL / RPC endpoints so distinct queries stay separate
  */
-export function normalizeEndpoint(urlStr: string, operationName?: string): string {
+export function normalizeEndpoint(
+  urlStr: string,
+  operationName?: string,
+): string {
   try {
     const parsed = new URL(urlStr);
     const normalizedSegments = parsed.pathname
-      .split('/')
-      .map((seg) => (isDynamicIdSegment(seg) ? ':id' : seg));
+      .split("/")
+      .map((seg) => (isDynamicIdSegment(seg) ? ":id" : seg));
 
-    let pathname = normalizedSegments.join('/');
-    if (pathname.length > 1 && pathname.endsWith('/')) {
+    let pathname = normalizedSegments.join("/");
+    if (pathname.length > 1 && pathname.endsWith("/")) {
       pathname = pathname.slice(0, -1);
     }
 
@@ -60,8 +66,10 @@ export function normalizeEndpoint(urlStr: string, operationName?: string): strin
     }
     return base;
   } catch {
-    const withoutQuery = urlStr.split('?')[0].split('#')[0];
-    return operationName ? `${withoutQuery}#${operationName.trim()}` : withoutQuery;
+    const withoutQuery = urlStr.split("?")[0].split("#")[0];
+    return operationName
+      ? `${withoutQuery}#${operationName.trim()}`
+      : withoutQuery;
   }
 }
 
@@ -69,13 +77,16 @@ export function normalizeEndpoint(urlStr: string, operationName?: string): strin
  * Extracts a GraphQL or RPC operation name from URL query params or request POST payload.
  * Never reads headers or cookies.
  */
-export function extractOperationName(urlStr: string, requestPostData?: string): string | undefined {
+export function extractOperationName(
+  urlStr: string,
+  requestPostData?: string,
+): string | undefined {
   try {
     const parsed = new URL(urlStr);
     const queryOp =
-      parsed.searchParams.get('operationName') ||
-      parsed.searchParams.get('operation') ||
-      parsed.searchParams.get('op');
+      parsed.searchParams.get("operationName") ||
+      parsed.searchParams.get("operation") ||
+      parsed.searchParams.get("op");
     if (queryOp && queryOp.trim()) {
       return queryOp.trim();
     }
@@ -83,15 +94,17 @@ export function extractOperationName(urlStr: string, requestPostData?: string): 
     // Ignore invalid URL
   }
 
-  if (requestPostData && requestPostData.trim().startsWith('{')) {
+  if (requestPostData && requestPostData.trim().startsWith("{")) {
     try {
       const body = JSON.parse(requestPostData);
-      if (typeof body.operationName === 'string' && body.operationName.trim()) {
+      if (typeof body.operationName === "string" && body.operationName.trim()) {
         return body.operationName.trim();
       }
       // Fallback: parse `query GetCustomers(...)` from GraphQL query string
-      if (typeof body.query === 'string') {
-        const match = body.query.match(/\b(?:query|mutation)\s+([A-Za-z0-9_]+)/);
+      if (typeof body.query === "string") {
+        const match = body.query.match(
+          /\b(?:query|mutation)\s+([A-Za-z0-9_]+)/,
+        );
         if (match?.[1]) {
           return match[1];
         }
@@ -107,11 +120,11 @@ export function extractOperationName(urlStr: string, requestPostData?: string): 
 function isLikelySensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();
   return (
-    lower.includes('token') ||
-    lower.includes('secret') ||
-    lower.includes('password') ||
-    lower.includes('apikey') ||
-    lower.includes('api_key') ||
-    lower.includes('auth')
+    lower.includes("token") ||
+    lower.includes("secret") ||
+    lower.includes("password") ||
+    lower.includes("apikey") ||
+    lower.includes("api_key") ||
+    lower.includes("auth")
   );
 }

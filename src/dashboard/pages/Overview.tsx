@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 import {
   ActivityEvent,
   CaptureError,
@@ -6,8 +6,8 @@ import {
   EndpointSource,
   ExtractedRecord,
   SessionMetrics,
-} from '../../shared/types';
-import { getMissingPages } from '../../extraction/pagination-detector';
+} from "../../shared/types";
+import { getMissingPages } from "../../extraction/pagination-detector";
 import {
   Activity,
   FileCheck2,
@@ -26,8 +26,8 @@ import {
   ArrowRight,
   Cpu,
   User,
-} from 'lucide-react';
-import { DashboardTab } from '../components/Header';
+} from "lucide-react";
+import { DashboardTab } from "../components/Header";
 
 interface Props {
   session: CaptureSession | null;
@@ -57,12 +57,12 @@ export const Overview: React.FC<Props> = ({
   onQuickExportSource,
 }) => {
   const [isEditingSessionLabel, setIsEditingSessionLabel] = useState(false);
-  const [draftLabel, setDraftLabel] = useState('');
+  const [draftLabel, setDraftLabel] = useState("");
 
   const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
+    if (bytes === 0) return "0 B";
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const sizes = ["B", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   };
@@ -91,46 +91,54 @@ export const Overview: React.FC<Props> = ({
     targetTab?: DashboardTab;
   }[] = [
     {
-      label: 'Unique Entities',
+      label: "Unique Entities",
       value: metrics.uniqueRecords,
       icon: <Database className="w-5 h-5 text-brand-700" aria-hidden="true" />,
       sub: `${metrics.parsedRecords} total items parsed`,
-      targetTab: 'records',
+      targetTab: "records",
     },
     {
-      label: 'API Datasets',
+      label: "API Datasets",
       value: metrics.endpointGroups,
       icon: <Layers className="w-5 h-5 text-brand-700" aria-hidden="true" />,
-      sub: 'Auto-labeled endpoint groups',
-      targetTab: 'sources',
+      sub: "Auto-labeled endpoint groups",
+      targetTab: "sources",
     },
     {
-      label: 'Responses Saved',
+      label: "Responses Saved",
       value: metrics.responsesSaved,
-      icon: <FileCheck2 className="w-5 h-5 text-brand-700" aria-hidden="true" />,
+      icon: (
+        <FileCheck2 className="w-5 h-5 text-brand-700" aria-hidden="true" />
+      ),
       sub: `${metrics.responsesObserved} network events observed`,
-      targetTab: 'responses',
+      targetTab: "responses",
     },
     {
-      label: 'Local Storage',
+      label: "Local Storage",
       value: formatBytes(metrics.bytesStored),
       icon: <HardDrive className="w-5 h-5 text-stone-600" aria-hidden="true" />,
-      sub: 'IndexedDB zero-cloud store',
-      targetTab: 'settings',
+      sub: "IndexedDB zero-cloud store",
+      targetTab: "settings",
     },
     {
-      label: 'Capture Health',
-      value: metrics.captureErrors === 0 ? 'Healthy' : `${metrics.captureErrors} issue(s)`,
+      label: "Capture Health",
+      value:
+        metrics.captureErrors === 0
+          ? "Healthy"
+          : `${metrics.captureErrors} issue(s)`,
       icon:
         metrics.captureErrors === 0 ? (
           <Activity className="w-5 h-5 text-brand-700" aria-hidden="true" />
         ) : (
-          <AlertTriangle className="w-5 h-5 text-amber-600" aria-hidden="true" />
+          <AlertTriangle
+            className="w-5 h-5 text-amber-600"
+            aria-hidden="true"
+          />
         ),
       sub:
         metrics.captureErrors === 0
-          ? 'All JSON payloads decoded cleanly'
-          : 'Review event log below',
+          ? "All JSON payloads decoded cleanly"
+          : "Review event log below",
     },
   ];
 
@@ -142,22 +150,25 @@ export const Overview: React.FC<Props> = ({
           <div className="space-y-2.5 max-w-2xl">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[11px] font-bold uppercase tracking-wider text-obsidian-950 bg-brand-400 px-2.5 py-0.5 rounded-md">
-                {session ? `Session • ${session.status}` : 'Workspace Ready'}
+                {session ? `Session • ${session.status}` : "Workspace Ready"}
               </span>
               {session?.scopeMode && (
                 <span className="text-[11px] font-mono text-brand-200 bg-obsidian-800 border border-stone-700 px-2 py-0.5 rounded-md">
-                  {session.scopeMode === 'all_tab_apis'
-                    ? 'Scope: All Tab APIs'
-                    : session.scopeMode === 'same_domain'
-                    ? 'Scope: Root Domain + Subdomains'
-                    : 'Scope: Strict Host'}
+                  {session.scopeMode === "all_tab_apis"
+                    ? "Scope: All Tab APIs"
+                    : session.scopeMode === "same_domain"
+                      ? "Scope: Root Domain + Subdomains"
+                      : "Scope: Strict Host"}
                 </span>
               )}
             </div>
 
             {session && isEditingSessionLabel ? (
               <div className="flex items-center gap-2 max-w-md">
-                <label htmlFor="edit-session-label-input" className="visually-hidden">
+                <label
+                  htmlFor="edit-session-label-input"
+                  className="visually-hidden"
+                >
                   Session label
                 </label>
                 <input
@@ -167,8 +178,8 @@ export const Overview: React.FC<Props> = ({
                   value={draftLabel}
                   onChange={(e) => setDraftLabel(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSaveSessionLabel();
-                    if (e.key === 'Escape') setIsEditingSessionLabel(false);
+                    if (e.key === "Enter") handleSaveSessionLabel();
+                    if (e.key === "Escape") setIsEditingSessionLabel(false);
                   }}
                   className="flex-1 px-3 py-1.5 rounded-lg bg-obsidian-800 border border-brand-400 text-white text-sm font-bold focus:outline-none"
                 />
@@ -192,7 +203,9 @@ export const Overview: React.FC<Props> = ({
             ) : (
               <div className="flex items-center gap-2.5">
                 <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">
-                  {session ? session.label : 'Capture & Label Live Website APIs'}
+                  {session
+                    ? session.label
+                    : "Capture & Label Live Website APIs"}
                 </h2>
                 {session && (
                   <button
@@ -212,17 +225,24 @@ export const Overview: React.FC<Props> = ({
 
             <div className="flex flex-wrap items-center gap-4 text-xs text-stone-300">
               <div className="flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-brand-400" aria-hidden="true" />
+                <Globe
+                  className="w-3.5 h-3.5 text-brand-400"
+                  aria-hidden="true"
+                />
                 <span>
-                  Target:{' '}
+                  Target:{" "}
                   <strong className="text-white font-mono">
-                    {session?.allowedHostnames.join(', ') || 'No tab attached yet'}
+                    {session?.allowedHostnames.join(", ") ||
+                      "No tab attached yet"}
                   </strong>
                 </span>
               </div>
               {session?.startedAt && (
                 <div className="flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-brand-400" aria-hidden="true" />
+                  <Clock
+                    className="w-3.5 h-3.5 text-brand-400"
+                    aria-hidden="true"
+                  />
                   <span className="tabular-nums">
                     Started {new Date(session.startedAt).toLocaleTimeString()}
                   </span>
@@ -233,10 +253,10 @@ export const Overview: React.FC<Props> = ({
 
           <div className="flex flex-wrap items-center gap-2.5">
             {!session ||
-            session.status === 'idle' ||
-            session.status === 'stopped' ||
-            session.status === 'detached' ||
-            session.status === 'error' ? (
+            session.status === "idle" ||
+            session.status === "stopped" ||
+            session.status === "detached" ||
+            session.status === "error" ? (
               <button
                 type="button"
                 onClick={onStartClick}
@@ -257,10 +277,13 @@ export const Overview: React.FC<Props> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onNavigateTab('exports')}
+                  onClick={() => onNavigateTab("exports")}
                   className="inline-flex items-center gap-2 px-4 py-2.5 bg-obsidian-800 hover:bg-stone-800 text-white border border-stone-700 text-xs font-bold rounded-xl transition"
                 >
-                  <Download className="w-4 h-4 text-brand-400" aria-hidden="true" />
+                  <Download
+                    className="w-4 h-4 text-brand-400"
+                    aria-hidden="true"
+                  />
                   Export Labeled CSV
                 </button>
               </>
@@ -276,7 +299,9 @@ export const Overview: React.FC<Props> = ({
             key={card.label}
             onClick={() => card.targetTab && onNavigateTab(card.targetTab)}
             className={`card-surface bg-white rounded-2xl shadow-card border border-stone-200/90 p-4 flex flex-col justify-between transition ${
-              card.targetTab ? 'cursor-pointer hover:border-brand-400 hover:shadow-md' : ''
+              card.targetTab
+                ? "cursor-pointer hover:border-brand-400 hover:shadow-md"
+                : ""
             }`}
           >
             <div className="flex items-center justify-between gap-2 mb-2">
@@ -306,16 +331,18 @@ export const Overview: React.FC<Props> = ({
               Discovered API Datasets & Pagination Coverage
             </h3>
             <p className="text-xs text-stone-500 mt-0.5">
-              Each API is automatically labeled by resource name (e.g., Customers, Medicines) and tracked across pages.
+              Each API is automatically labeled by resource name (e.g.,
+              Customers, Medicines) and tracked across pages.
             </p>
           </div>
           {sources.length > 0 && (
             <button
               type="button"
-              onClick={() => onNavigateTab('sources')}
+              onClick={() => onNavigateTab("sources")}
               className="inline-flex items-center gap-1 text-xs font-bold text-brand-800 hover:text-brand-950 transition"
             >
-              Configure all datasets <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+              Configure all datasets{" "}
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           )}
         </div>
@@ -326,7 +353,9 @@ export const Overview: React.FC<Props> = ({
               No API Datasets Observed Yet
             </p>
             <p className="text-xs text-stone-600 max-w-lg mx-auto">
-              Attach to a website tab and browse, search, or click through pages. Every JSON API endpoint will appear here with a clean dataset label and pagination tracker.
+              Attach to a website tab and browse, search, or click through
+              pages. Every JSON API endpoint will appear here with a clean
+              dataset label and pagination tracker.
             </p>
           </div>
         ) : (
@@ -340,8 +369,13 @@ export const Overview: React.FC<Props> = ({
                 totalExpected && totalExpected > 0
                   ? Math.min(100, Math.round((count / totalExpected) * 100))
                   : pag?.totalPages && pag.totalPages > 0
-                  ? Math.min(100, Math.round((pag.observedPages.length / pag.totalPages) * 100))
-                  : null;
+                    ? Math.min(
+                        100,
+                        Math.round(
+                          (pag.observedPages.length / pag.totalPages) * 100,
+                        ),
+                      )
+                    : null;
 
               return (
                 <div
@@ -371,61 +405,71 @@ export const Overview: React.FC<Props> = ({
                           {count}
                         </span>
                         <span className="text-[11px] text-stone-500 block">
-                          {totalExpected ? `of ${totalExpected} items` : 'unique rows'}
+                          {totalExpected
+                            ? `of ${totalExpected} items`
+                            : "unique rows"}
                         </span>
                       </div>
                     </div>
 
-                    {pag && (pag.totalPages || pag.observedPages.length > 0 || pag.hasNextPage) && (
-                      <div className="mt-3 pt-2.5 border-t border-stone-200/70 space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px] text-stone-600">
-                          <span>
-                            {pag.totalPages
-                              ? `Pages captured: ${pag.observedPages.length} of ${pag.totalPages}`
-                              : pag.hasNextPage
-                              ? 'More pages available via cursor/next link'
-                              : `${src.observedCount} response(s) captured`}
-                          </span>
-                          {progressPct !== null && (
-                            <span className="font-mono font-bold text-brand-800 tabular-nums">
-                              {progressPct}%
+                    {pag &&
+                      (pag.totalPages ||
+                        pag.observedPages.length > 0 ||
+                        pag.hasNextPage) && (
+                        <div className="mt-3 pt-2.5 border-t border-stone-200/70 space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px] text-stone-600">
+                            <span>
+                              {pag.totalPages
+                                ? `Pages captured: ${pag.observedPages.length} of ${pag.totalPages}`
+                                : pag.hasNextPage
+                                  ? "More pages available via cursor/next link"
+                                  : `${src.observedCount} response(s) captured`}
                             </span>
+                            {progressPct !== null && (
+                              <span className="font-mono font-bold text-brand-800 tabular-nums">
+                                {progressPct}%
+                              </span>
+                            )}
+                          </div>
+                          {progressPct !== null && (
+                            <progress
+                              value={progressPct}
+                              max={100}
+                              className="w-full h-1.5 rounded-full overflow-hidden"
+                            />
+                          )}
+                          {missing.length > 0 && (
+                            <p className="text-[11px] text-amber-800 font-medium">
+                              Remaining pages: {missing.slice(0, 6).join(", ")}
+                              {missing.length > 6
+                                ? ` (+${missing.length - 6} more)`
+                                : ""}
+                            </p>
                           )}
                         </div>
-                        {progressPct !== null && (
-                          <progress
-                            value={progressPct}
-                            max={100}
-                            className="w-full h-1.5 rounded-full overflow-hidden"
-                          />
-                        )}
-                        {missing.length > 0 && (
-                          <p className="text-[11px] text-amber-800 font-medium">
-                            Remaining pages: {missing.slice(0, 6).join(', ')}
-                            {missing.length > 6 ? ` (+${missing.length - 6} more)` : ''}
-                          </p>
-                        )}
-                      </div>
-                    )}
+                      )}
                   </div>
 
                   <div className="flex items-center justify-between gap-2 pt-2 border-t border-stone-200/60">
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => onNavigateTab('records', src.id)}
+                        onClick={() => onNavigateTab("records", src.id)}
                         className="px-2.5 py-1 rounded-lg bg-white hover:bg-stone-100 border border-stone-200 text-[11px] font-bold text-obsidian-900 transition"
                       >
                         View Data
                       </button>
                       {(missing.length > 0 || pag?.hasNextPage) &&
-                        session?.status === 'recording' && (
+                        session?.status === "recording" && (
                           <button
                             type="button"
                             onClick={() => onOpenAutoPaginate(src.id)}
                             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-100 hover:bg-brand-200 border border-brand-300 text-[11px] font-bold text-brand-950 transition"
                           >
-                            <FastForward className="w-3 h-3" aria-hidden="true" />
+                            <FastForward
+                              className="w-3 h-3"
+                              aria-hidden="true"
+                            />
                             Fetch Pages
                           </button>
                         )}
@@ -470,8 +514,11 @@ export const Overview: React.FC<Props> = ({
               >
                 <div className="flex items-center justify-between text-rose-900 font-bold">
                   <span className="inline-flex items-center gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600" aria-hidden="true" />
-                    System Warning ({err.kind.replace('_', ' ')})
+                    <AlertTriangle
+                      className="w-3.5 h-3.5 text-rose-600"
+                      aria-hidden="true"
+                    />
+                    System Warning ({err.kind.replace("_", " ")})
                   </span>
                   <span className="text-[10px] text-rose-700 font-mono tabular-nums">
                     {new Date(err.timestamp).toLocaleTimeString()}
@@ -479,14 +526,17 @@ export const Overview: React.FC<Props> = ({
                 </div>
                 <p className="text-stone-700">{err.message}</p>
                 {err.url && (
-                  <p className="text-[11px] font-mono text-stone-500 truncate">{err.url}</p>
+                  <p className="text-[11px] font-mono text-stone-500 truncate">
+                    {err.url}
+                  </p>
                 )}
               </div>
             ))}
 
             {activities.length === 0 && errors.length === 0 ? (
               <div className="py-10 text-center text-xs text-stone-500">
-                System and user actions will appear here in real time as APIs are captured, paginated, and exported.
+                System and user actions will appear here in real time as APIs
+                are captured, paginated, and exported.
               </div>
             ) : (
               activities.map((ev) => (
@@ -497,12 +547,12 @@ export const Overview: React.FC<Props> = ({
                   <div className="flex items-start gap-2.5 min-w-0">
                     <span
                       className={`mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase flex-shrink-0 ${
-                        ev.actor === 'system'
-                          ? 'bg-obsidian-900 text-brand-300'
-                          : 'bg-brand-100 text-brand-950 border border-brand-300'
+                        ev.actor === "system"
+                          ? "bg-obsidian-900 text-brand-300"
+                          : "bg-brand-100 text-brand-950 border border-brand-300"
                       }`}
                     >
-                      {ev.actor === 'system' ? (
+                      {ev.actor === "system" ? (
                         <Cpu className="w-2.5 h-2.5" aria-hidden="true" />
                       ) : (
                         <User className="w-2.5 h-2.5" aria-hidden="true" />
@@ -510,7 +560,9 @@ export const Overview: React.FC<Props> = ({
                       {ev.actor}
                     </span>
                     <div className="min-w-0">
-                      <p className="font-semibold text-obsidian-900 leading-snug">{ev.message}</p>
+                      <p className="font-semibold text-obsidian-900 leading-snug">
+                        {ev.message}
+                      </p>
                       {ev.detail && (
                         <p className="text-[11px] text-stone-500 font-mono truncate mt-0.5">
                           {ev.detail}
@@ -533,24 +585,26 @@ export const Overview: React.FC<Props> = ({
             How Smart Multi-Page Extraction Works
           </h3>
           <p className="text-xs text-stone-600 leading-relaxed">
-            Your browser tab keeps full control of authentication and sessions while this workspace automatically reads JSON APIs, detects pagination, and labels each dataset cleanly.
+            Your browser tab keeps full control of authentication and sessions
+            while this workspace automatically reads JSON APIs, detects
+            pagination, and labels each dataset cleanly.
           </p>
           <ol className="space-y-3 pt-1">
             {[
               {
-                step: '1',
-                title: 'Attach to Any Website Tab',
-                desc: 'Captures REST, GraphQL (by operationName), JSON:API, cursor feeds, and cross-subdomain api.* backends automatically.',
+                step: "1",
+                title: "Attach to Any Website Tab",
+                desc: "Captures REST, GraphQL (by operationName), JSON:API, cursor feeds, and cross-subdomain api.* backends automatically.",
               },
               {
-                step: '2',
-                title: 'Collect All Pages Effortlessly',
-                desc: 'Browse manually or launch Auto-Fetch Pages to click Next, scroll feeds, or walk ?page=2..N with polite pacing.',
+                step: "2",
+                title: "Collect All Pages Effortlessly",
+                desc: "Browse manually or launch Auto-Fetch Pages to click Next, scroll feeds, or walk ?page=2..N with polite pacing.",
               },
               {
-                step: '3',
-                title: 'Export Clean Labeled Datasets',
-                desc: 'Rename datasets (e.g., Customers, Medicines, Orders), pick readable columns, and export separate labeled CSVs in one click.',
+                step: "3",
+                title: "Export Clean Labeled Datasets",
+                desc: "Rename datasets (e.g., Customers, Medicines, Orders), pick readable columns, and export separate labeled CSVs in one click.",
               },
             ].map((item) => (
               <li key={item.step} className="flex gap-3 text-xs text-stone-700">
@@ -558,8 +612,12 @@ export const Overview: React.FC<Props> = ({
                   {item.step}
                 </span>
                 <div>
-                  <strong className="text-obsidian-900 block mb-0.5">{item.title}</strong>
-                  <span className="text-stone-600 leading-relaxed">{item.desc}</span>
+                  <strong className="text-obsidian-900 block mb-0.5">
+                    {item.title}
+                  </strong>
+                  <span className="text-stone-600 leading-relaxed">
+                    {item.desc}
+                  </span>
                 </div>
               </li>
             ))}

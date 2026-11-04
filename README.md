@@ -23,6 +23,11 @@ A production-grade Chrome extension (Manifest V3) that observes permitted networ
 - **Local-First Privacy:** Data resides exclusively in browser IndexedDB on your machine. Zero telemetry, zero external network uploads. Sensitive URL query parameters (tokens, keys, passwords) are automatically redacted.
 - **Chrome Side Panel & Dashboard:** Control capture, monitor counters, and view active endpoints directly in Chrome's side panel or inside the full-featured 7-tab dashboard.
 - **Built-in Demo Catalog:** Includes a mock medication catalog web application simulating pagination (page numbers, cursors, POST requests) for instant testing.
+- **BandaGo POS to Sphere Pharmacy Bridge:** Specialized automated data transformer and live sync engine between BandaGo Pharmacy POS (`go.bandahealth.org`, OSGi GraphQL) and Sphere Pharmacy cloud storefronts:
+  - **FEFO (First-Expired, First-Out) Inventory Engine:** Sums available unexpired batch stock across `storageOnHand` while discarding legally unsellable expired inventory.
+  - **Kenya Pharmacy and Poisons Board (PPB) Scheduling:** Automatically classifies prescription-only medications (POM) vs OTC.
+  - **Offline Sync Ledger:** Resilient IndexedDB queue (`sync_queue`) with exponential backoff retries and in-flight race-condition protection.
+  - **Zero-Touch Background Poller:** Periodic Chrome alarm (every 10 minutes) leveraging open BandaGo tabs to execute non-intrusive catalog polls.
 
 ---
 
@@ -41,19 +46,24 @@ api-data-csv-extractor/
 │   ├── manifest.json
 │   └── icons/
 ├── src/
-│   ├── background/                # Service worker, CDP adapter, tab manager
+│   ├── background/                # Service worker, CDP adapter, poller, tab manager
 │   │   ├── service-worker.ts
 │   │   ├── capture-controller.ts
 │   │   ├── cdp-adapter.ts
+│   │   ├── bandago-poller.ts      # Active background in-tab GraphQL catalog poller
 │   │   └── tab-manager.ts
 │   ├── data/                      # IndexedDB database & repositories
-│   │   ├── db.ts
+│   │   ├── db.ts                  # Dexie schema v3 with sync_queue table
 │   │   └── repositories.ts
 │   ├── extraction/                # Extraction, deduplication & schema inference
+│   │   ├── bandago-normalizer.ts  # BandaGo POS to Sphere Pharmacy FEFO normalizer
 │   │   ├── flatten.ts
 │   │   ├── deduplicate.ts
 │   │   ├── schema-inference.ts
 │   │   └── path-selector.ts
+│   ├── sync/                      # Outbound live synchronization engine
+│   │   ├── sphere-client.ts       # Authenticated Sphere Pharmacy API client
+│   │   └── sync-queue.ts          # Offline-first queue manager with retry limits
 │   ├── export/                    # CSV, JSON, JSONL generators & sanitization
 │   │   ├── csv.ts
 │   │   ├── json.ts
@@ -65,7 +75,7 @@ api-data-csv-extractor/
 │   │   └── source-policy.ts
 │   ├── messaging/                 # Extension message passing protocol
 │   │   └── protocol.ts
-│   ├── dashboard/                 # React Dashboard (7 tabs)
+│   ├── dashboard/                 # React Dashboard (7 tabs + Sphere Sync settings)
 │   ├── sidepanel/                 # React Side Panel
 │   ├── demo/                      # Interactive Demo Target
 │   └── shared/                    # Types and constants
@@ -136,12 +146,12 @@ npm run build
 
 ## Supported Export Formats
 
-| Format | File Extension | Structure |
-|---|---|---|
-| **Flattened CSV** | `.csv` | Nested objects are flattened into dot paths (`strength.value`); arrays are serialized to JSON strings. Protected against formula injection. |
-| **Raw CSV** | `.csv` | Metadata columns (`id`, `capturedAt`, `source`) plus one `raw_json` column. |
-| **JSON Lines** | `.jsonl` | One complete JSON record per line, preserving full hierarchical structure for streaming ETL pipelines. |
-| **Session JSON Bundle** | `.json` | Comprehensive export containing session metadata, sources, schema mappings, and raw responses. |
+| Format                  | File Extension | Structure                                                                                                                                   |
+| ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Flattened CSV**       | `.csv`         | Nested objects are flattened into dot paths (`strength.value`); arrays are serialized to JSON strings. Protected against formula injection. |
+| **Raw CSV**             | `.csv`         | Metadata columns (`id`, `capturedAt`, `source`) plus one `raw_json` column.                                                                 |
+| **JSON Lines**          | `.jsonl`       | One complete JSON record per line, preserving full hierarchical structure for streaming ETL pipelines.                                      |
+| **Session JSON Bundle** | `.json`        | Comprehensive export containing session metadata, sources, schema mappings, and raw responses.                                              |
 
 ---
 
@@ -164,6 +174,7 @@ npm test
 ```
 
 Tests cover:
+
 - CSV RFC 4180 escaping and formula injection neutralization.
 - Flattening logic and unique column ordering.
 - Deduplication policies (Keep Latest, Keep First, Keep All) and 150-record accumulation.

@@ -1,33 +1,85 @@
-import { DetectedPagination, PaginationStrategy, SourcePaginationState } from '../shared/types';
+import {
+  DetectedPagination,
+  PaginationStrategy,
+  SourcePaginationState,
+} from "../shared/types";
 
-const PAGE_PARAM_KEYS = ['page', 'p', 'pageNumber', 'page_number', 'pageNum', 'page_num', 'currentPage', 'current_page'];
-const OFFSET_PARAM_KEYS = ['offset', 'skip', 'start', 'startIndex', 'start_index', 'from'];
-const LIMIT_PARAM_KEYS = ['limit', 'per_page', 'perPage', 'pageSize', 'page_size', 'size', 'take', 'count', 'length'];
-const CURSOR_PARAM_KEYS = ['cursor', 'after', 'next_cursor', 'nextCursor', 'pageToken', 'page_token', 'continuation'];
+const PAGE_PARAM_KEYS = [
+  "page",
+  "p",
+  "pageNumber",
+  "page_number",
+  "pageNum",
+  "page_num",
+  "currentPage",
+  "current_page",
+];
+const OFFSET_PARAM_KEYS = [
+  "offset",
+  "skip",
+  "start",
+  "startIndex",
+  "start_index",
+  "from",
+];
+const LIMIT_PARAM_KEYS = [
+  "limit",
+  "per_page",
+  "perPage",
+  "pageSize",
+  "page_size",
+  "size",
+  "take",
+  "count",
+  "length",
+];
+const CURSOR_PARAM_KEYS = [
+  "cursor",
+  "after",
+  "next_cursor",
+  "nextCursor",
+  "pageToken",
+  "page_token",
+  "continuation",
+];
 
-function findNumericProp(obj: Record<string, any>, keys: string[]): number | undefined {
+function findNumericProp(
+  obj: Record<string, any>,
+  keys: string[],
+): number | undefined {
   for (const key of keys) {
     if (key in obj) {
       const v = obj[key];
-      if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
-      if (typeof v === 'string' && /^\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+      if (typeof v === "string" && /^\d+$/.test(v.trim()))
+        return parseInt(v.trim(), 10);
     }
   }
   return undefined;
 }
 
-function findStringProp(obj: Record<string, any>, keys: string[]): string | undefined {
+function findStringProp(
+  obj: Record<string, any>,
+  keys: string[],
+): string | undefined {
   for (const key of keys) {
-    if (key in obj && typeof obj[key] === 'string' && obj[key].trim().length > 0) {
+    if (
+      key in obj &&
+      typeof obj[key] === "string" &&
+      obj[key].trim().length > 0
+    ) {
       return obj[key].trim();
     }
   }
   return undefined;
 }
 
-function findBoolProp(obj: Record<string, any>, keys: string[]): boolean | undefined {
+function findBoolProp(
+  obj: Record<string, any>,
+  keys: string[],
+): boolean | undefined {
   for (const key of keys) {
-    if (key in obj && typeof obj[key] === 'boolean') {
+    if (key in obj && typeof obj[key] === "boolean") {
       return obj[key];
     }
   }
@@ -57,7 +109,7 @@ export function detectPaginationFromResponse(params: {
   let limitParamName: string | undefined;
   let offsetValue: number | undefined;
   let offsetParamName: string | undefined;
-  let strategy: PaginationStrategy = 'none';
+  let strategy: PaginationStrategy = "none";
 
   // 1. Inspect URL query parameters
   let parsedUrl: URL | null = null;
@@ -68,7 +120,7 @@ export function detectPaginationFromResponse(params: {
       if (val && /^\d+$/.test(val)) {
         currentPage = parseInt(val, 10);
         pageParamName = key;
-        strategy = 'page';
+        strategy = "page";
         break;
       }
     }
@@ -85,14 +137,14 @@ export function detectPaginationFromResponse(params: {
       if (val && /^\d+$/.test(val)) {
         offsetValue = parseInt(val, 10);
         offsetParamName = key;
-        if (strategy === 'none') strategy = 'offset';
+        if (strategy === "none") strategy = "offset";
         break;
       }
     }
     for (const key of CURSOR_PARAM_KEYS) {
       const val = parsedUrl.searchParams.get(key);
       if (val) {
-        if (strategy === 'none') strategy = 'cursor';
+        if (strategy === "none") strategy = "cursor";
         break;
       }
     }
@@ -104,20 +156,25 @@ export function detectPaginationFromResponse(params: {
   if (requestBody) {
     try {
       const reqJson = JSON.parse(requestBody);
-      const reqTargets = [reqJson, reqJson?.variables, reqJson?.pagination, reqJson?.page].filter(
-        (x) => x && typeof x === 'object' && !Array.isArray(x)
-      );
+      const reqTargets = [
+        reqJson,
+        reqJson?.variables,
+        reqJson?.pagination,
+        reqJson?.page,
+      ].filter((x) => x && typeof x === "object" && !Array.isArray(x));
       for (const target of reqTargets) {
         if (currentPage === undefined) {
           currentPage = findNumericProp(target, PAGE_PARAM_KEYS);
-          if (currentPage !== undefined && strategy === 'none') strategy = 'page';
+          if (currentPage !== undefined && strategy === "none")
+            strategy = "page";
         }
         if (pageSize === undefined) {
-          pageSize = findNumericProp(target, [...LIMIT_PARAM_KEYS, 'first']);
+          pageSize = findNumericProp(target, [...LIMIT_PARAM_KEYS, "first"]);
         }
         if (offsetValue === undefined) {
           offsetValue = findNumericProp(target, OFFSET_PARAM_KEYS);
-          if (offsetValue !== undefined && strategy === 'none') strategy = 'offset';
+          if (offsetValue !== undefined && strategy === "none")
+            strategy = "offset";
         }
       }
     } catch {
@@ -126,7 +183,11 @@ export function detectPaginationFromResponse(params: {
   }
 
   // 3. Inspect JSON response envelope containers
-  if (parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody)) {
+  if (
+    parsedBody &&
+    typeof parsedBody === "object" &&
+    !Array.isArray(parsedBody)
+  ) {
     const root = parsedBody as Record<string, any>;
     const envelopeCandidates: Record<string, any>[] = [
       root,
@@ -140,84 +201,115 @@ export function detectPaginationFromResponse(params: {
       root.data?.pagination,
       root.data?.pageInfo,
       // Also check nested GraphQL connection objects (e.g. data.medicines.pageInfo)
-      ...(root.data && typeof root.data === 'object' && !Array.isArray(root.data)
+      ...(root.data &&
+      typeof root.data === "object" &&
+      !Array.isArray(root.data)
         ? Object.values(root.data)
-            .filter((v: any) => v && typeof v === 'object' && !Array.isArray(v))
+            .filter((v: any) => v && typeof v === "object" && !Array.isArray(v))
             .flatMap((v: any) => [v, v.pageInfo, v.meta, v.pagination])
         : []),
-    ].filter((c): c is Record<string, any> => Boolean(c && typeof c === 'object' && !Array.isArray(c)));
+    ].filter((c): c is Record<string, any> =>
+      Boolean(c && typeof c === "object" && !Array.isArray(c)),
+    );
 
     for (const env of envelopeCandidates) {
       if (currentPage === undefined) {
-        const p = findNumericProp(env, ['page', 'currentPage', 'current_page', 'pageNumber', 'page_number']);
+        const p = findNumericProp(env, [
+          "page",
+          "currentPage",
+          "current_page",
+          "pageNumber",
+          "page_number",
+        ]);
         if (p !== undefined && p >= 0) {
           currentPage = p;
-          if (strategy === 'none') strategy = 'page';
+          if (strategy === "none") strategy = "page";
         }
       }
 
       if (pageSize === undefined) {
-        pageSize = findNumericProp(env, ['limit', 'perPage', 'per_page', 'pageSize', 'page_size', 'size']);
+        pageSize = findNumericProp(env, [
+          "limit",
+          "perPage",
+          "per_page",
+          "pageSize",
+          "page_size",
+          "size",
+        ]);
       }
 
       if (totalPages === undefined) {
         totalPages = findNumericProp(env, [
-          'totalPages',
-          'total_pages',
-          'lastPage',
-          'last_page',
-          'pageCount',
-          'page_count',
-          'pages',
+          "totalPages",
+          "total_pages",
+          "lastPage",
+          "last_page",
+          "pageCount",
+          "page_count",
+          "pages",
         ]);
       }
 
       if (totalRecords === undefined) {
         totalRecords = findNumericProp(env, [
-          'totalItems',
-          'total_items',
-          'totalCount',
-          'total_count',
-          'totalRecords',
-          'total_records',
-          'recordsTotal',
-          'total',
-          'count',
-          'nbHits',
+          "totalItems",
+          "total_items",
+          "totalCount",
+          "total_count",
+          "totalRecords",
+          "total_records",
+          "recordsTotal",
+          "total",
+          "count",
+          "nbHits",
         ]);
       }
 
       if (hasNextPage === undefined) {
-        hasNextPage = findBoolProp(env, ['hasNextPage', 'has_next_page', 'hasMore', 'has_more']);
+        hasNextPage = findBoolProp(env, [
+          "hasNextPage",
+          "has_next_page",
+          "hasMore",
+          "has_more",
+        ]);
       }
 
       if (nextCursor === undefined) {
-        if ('nextCursor' in env && env.nextCursor === null) nextCursor = null;
-        else if ('next_cursor' in env && env.next_cursor === null) nextCursor = null;
+        if ("nextCursor" in env && env.nextCursor === null) nextCursor = null;
+        else if ("next_cursor" in env && env.next_cursor === null)
+          nextCursor = null;
         else {
-          const nc = findStringProp(env, ['nextCursor', 'next_cursor', 'endCursor', 'end_cursor', 'nextPageToken']);
+          const nc = findStringProp(env, [
+            "nextCursor",
+            "next_cursor",
+            "endCursor",
+            "end_cursor",
+            "nextPageToken",
+          ]);
           if (nc) nextCursor = nc;
         }
       }
 
       if (nextUrl === undefined) {
         const directNext =
-          typeof env.next === 'string'
+          typeof env.next === "string"
             ? env.next
-            : typeof env['@odata.nextLink'] === 'string'
-            ? env['@odata.nextLink']
-            : typeof env.links?.next === 'string'
-            ? env.links.next
-            : typeof env._links?.next?.href === 'string'
-            ? env._links.next.href
-            : undefined;
+            : typeof env["@odata.nextLink"] === "string"
+              ? env["@odata.nextLink"]
+              : typeof env.links?.next === "string"
+                ? env.links.next
+                : typeof env._links?.next?.href === "string"
+                  ? env._links.next.href
+                  : undefined;
         if (directNext) {
           try {
-            nextUrl = parsedUrl ? new URL(directNext, parsedUrl.origin).toString() : directNext;
+            nextUrl = parsedUrl
+              ? new URL(directNext, parsedUrl.origin).toString()
+              : directNext;
           } catch {
             nextUrl = directNext;
           }
-        } else if ('next' in env && env.next === null) {
+        } else if ("next" in env && env.next === null) {
           nextUrl = null;
         }
       }
@@ -225,42 +317,66 @@ export function detectPaginationFromResponse(params: {
   }
 
   // Infer effective pageSize if missing
-  const effectivePageSize = pageSize || (extractedCount > 0 ? extractedCount : undefined);
+  const effectivePageSize =
+    pageSize || (extractedCount > 0 ? extractedCount : undefined);
 
   // Convert offset + limit into 1-based page number for clear progress display
-  if (offsetValue !== undefined && effectivePageSize && effectivePageSize > 0 && currentPage === undefined) {
+  if (
+    offsetValue !== undefined &&
+    effectivePageSize &&
+    effectivePageSize > 0 &&
+    currentPage === undefined
+  ) {
     currentPage = Math.floor(offsetValue / effectivePageSize) + 1;
   }
 
   // Infer totalPages from totalRecords & effectivePageSize
-  if (totalPages === undefined && totalRecords !== undefined && effectivePageSize && effectivePageSize > 0) {
-    if (totalRecords > effectivePageSize || currentPage !== undefined || nextCursor !== undefined || nextUrl !== undefined) {
+  if (
+    totalPages === undefined &&
+    totalRecords !== undefined &&
+    effectivePageSize &&
+    effectivePageSize > 0
+  ) {
+    if (
+      totalRecords > effectivePageSize ||
+      currentPage !== undefined ||
+      nextCursor !== undefined ||
+      nextUrl !== undefined
+    ) {
       totalPages = Math.max(1, Math.ceil(totalRecords / effectivePageSize));
     }
   }
 
   // Finalize strategy
   if (nextUrl) {
-    if (strategy === 'none') strategy = 'next_url';
+    if (strategy === "none") strategy = "next_url";
   } else if (nextCursor !== undefined) {
-    strategy = 'cursor';
-  } else if (totalPages !== undefined && totalPages > 1 && strategy === 'none') {
-    strategy = 'page';
+    strategy = "cursor";
+  } else if (
+    totalPages !== undefined &&
+    totalPages > 1 &&
+    strategy === "none"
+  ) {
+    strategy = "page";
   }
 
   // Infer hasNextPage
   if (hasNextPage === undefined) {
     if (nextUrl) {
       hasNextPage = true;
-    } else if (nextUrl === null && strategy === 'next_url') {
+    } else if (nextUrl === null && strategy === "next_url") {
       hasNextPage = false;
-    } else if (typeof nextCursor === 'string' && nextCursor.length > 0) {
+    } else if (typeof nextCursor === "string" && nextCursor.length > 0) {
       hasNextPage = true;
-    } else if (nextCursor === null && strategy === 'cursor') {
+    } else if (nextCursor === null && strategy === "cursor") {
       hasNextPage = false;
     } else if (currentPage !== undefined && totalPages !== undefined) {
       hasNextPage = currentPage < totalPages;
-    } else if (offsetValue !== undefined && effectivePageSize && totalRecords !== undefined) {
+    } else if (
+      offsetValue !== undefined &&
+      effectivePageSize &&
+      totalRecords !== undefined
+    ) {
       hasNextPage = offsetValue + extractedCount < totalRecords;
     }
   }
@@ -271,9 +387,16 @@ export function detectPaginationFromResponse(params: {
       const nextParsed = new URL(parsedUrl.toString());
       nextParsed.searchParams.set(pageParamName, String(currentPage + 1));
       nextUrl = nextParsed.toString();
-    } else if (offsetParamName && offsetValue !== undefined && effectivePageSize) {
+    } else if (
+      offsetParamName &&
+      offsetValue !== undefined &&
+      effectivePageSize
+    ) {
       const nextParsed = new URL(parsedUrl.toString());
-      nextParsed.searchParams.set(offsetParamName, String(offsetValue + effectivePageSize));
+      nextParsed.searchParams.set(
+        offsetParamName,
+        String(offsetValue + effectivePageSize),
+      );
       nextUrl = nextParsed.toString();
     }
   }
@@ -298,10 +421,10 @@ export function detectPaginationFromResponse(params: {
 export function mergePaginationState(
   existing: SourcePaginationState | undefined,
   detected: DetectedPagination,
-  requestUrl: string
+  requestUrl: string,
 ): SourcePaginationState | undefined {
   if (
-    detected.strategy === 'none' &&
+    detected.strategy === "none" &&
     detected.totalRecords === undefined &&
     detected.totalPages === undefined &&
     !existing
@@ -317,17 +440,26 @@ export function mergePaginationState(
   const observedPages = Array.from(nextPagesSet).sort((a, b) => a - b);
 
   // Preserve valid URL without redacted tokens for in-tab next-page generation if query-based
-  const isCleanUrl = !requestUrl.includes('[REDACTED]') && !requestUrl.includes('%5BREDACTED%5D');
+  const isCleanUrl =
+    !requestUrl.includes("[REDACTED]") &&
+    !requestUrl.includes("%5BREDACTED%5D");
 
   return {
-    strategy: detected.strategy !== 'none' ? detected.strategy : existing?.strategy || 'none',
+    strategy:
+      detected.strategy !== "none"
+        ? detected.strategy
+        : existing?.strategy || "none",
     currentPage: detected.currentPage ?? existing?.currentPage,
     pageSize: detected.pageSize ?? existing?.pageSize,
     totalPages: detected.totalPages ?? existing?.totalPages,
     totalRecords: detected.totalRecords ?? existing?.totalRecords,
     hasNextPage: detected.hasNextPage ?? existing?.hasNextPage,
-    nextCursor: detected.nextCursor !== undefined ? detected.nextCursor : existing?.nextCursor,
-    nextUrl: detected.nextUrl !== undefined ? detected.nextUrl : existing?.nextUrl,
+    nextCursor:
+      detected.nextCursor !== undefined
+        ? detected.nextCursor
+        : existing?.nextCursor,
+    nextUrl:
+      detected.nextUrl !== undefined ? detected.nextUrl : existing?.nextUrl,
     pageParamName: detected.pageParamName ?? existing?.pageParamName,
     limitParamName: detected.limitParamName ?? existing?.limitParamName,
     observedPages,
@@ -339,7 +471,8 @@ export function mergePaginationState(
  * Computes any missing page numbers (e.g., observed [1, 2, 4] of totalPages 5 -> missing [3, 5]).
  */
 export function getMissingPages(pagination?: SourcePaginationState): number[] {
-  if (!pagination || !pagination.totalPages || pagination.totalPages <= 1) return [];
+  if (!pagination || !pagination.totalPages || pagination.totalPages <= 1)
+    return [];
   const cap = Math.min(pagination.totalPages, 200);
   const seen = new Set(pagination.observedPages);
   const missing: number[] = [];
@@ -356,7 +489,7 @@ export function getMissingPages(pagination?: SourcePaginationState): number[] {
  */
 export function buildPageUrlsForSource(
   pagination: SourcePaginationState,
-  maxPagesToGenerate = 20
+  maxPagesToGenerate = 20,
 ): string[] {
   const urls: string[] = [];
   if (!pagination.sampleRequestUrl) {
@@ -378,7 +511,10 @@ export function buildPageUrlsForSource(
       }
 
       // If totalPages is unknown, step forward from highest observed page
-      const maxSeen = pagination.observedPages.length > 0 ? Math.max(...pagination.observedPages) : 1;
+      const maxSeen =
+        pagination.observedPages.length > 0
+          ? Math.max(...pagination.observedPages)
+          : 1;
       for (let i = 1; i <= maxPagesToGenerate; i++) {
         const u = new URL(baseUrl.toString());
         u.searchParams.set(pagination.pageParamName, String(maxSeen + i));

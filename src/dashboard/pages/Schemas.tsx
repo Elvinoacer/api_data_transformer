@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useId, useMemo } from 'react';
-import { EndpointSchema, EndpointSource } from '../../shared/types';
+import React, { useState, useEffect, useId, useMemo } from "react";
+import { EndpointSchema, EndpointSource } from "../../shared/types";
 import {
   ArrowUpDown,
   AlertCircle,
@@ -7,8 +7,8 @@ import {
   Layers,
   Search,
   Tag,
-} from 'lucide-react';
-import { formatColumnHeader } from '../../extraction/flatten';
+} from "lucide-react";
+import { formatColumnHeader } from "../../extraction/flatten";
 
 interface Props {
   schemas: EndpointSchema[];
@@ -17,26 +17,26 @@ interface Props {
 
 export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
   const [selectedSourceId, setSelectedSourceId] = useState<string>(
-    schemas[0]?.sourceId || sources[0]?.id || ''
+    schemas[0]?.sourceId || sources[0]?.id || "",
   );
-  const [fieldQuery, setFieldQuery] = useState('');
+  const [fieldQuery, setFieldQuery] = useState("");
   const captionId = useId();
 
   useEffect(() => {
     if (!selectedSourceId && (schemas[0]?.sourceId || sources[0]?.id)) {
-      setSelectedSourceId(schemas[0]?.sourceId || sources[0]?.id || '');
+      setSelectedSourceId(schemas[0]?.sourceId || sources[0]?.id || "");
     }
   }, [schemas, sources, selectedSourceId]);
 
   const activeSchema =
     schemas.find((s) => s.sourceId === selectedSourceId) || schemas[0];
   const activeSource = sources.find(
-    (s) => s.id === (activeSchema?.sourceId || selectedSourceId)
+    (s) => s.id === (activeSchema?.sourceId || selectedSourceId),
   );
 
   const allFields = useMemo(
     () => (activeSchema ? Object.values(activeSchema.fields) : []),
-    [activeSchema]
+    [activeSchema],
   );
 
   const filteredFields = useMemo(() => {
@@ -46,13 +46,13 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
       (f) =>
         f.path.toLowerCase().includes(q) ||
         f.types.some((t) => t.toLowerCase().includes(q)) ||
-        f.sampleValues.some((v) => String(v).toLowerCase().includes(q))
+        f.sampleValues.some((v) => String(v).toLowerCase().includes(q)),
     );
   }, [allFields, fieldQuery]);
 
   const conflictCount = useMemo(
     () => allFields.filter((f) => f.hasConflict).length,
-    [allFields]
+    [allFields],
   );
 
   return (
@@ -67,7 +67,8 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
             Schema Inference & Field Discovery
           </h2>
           <p className="text-xs text-stone-500 mt-1">
-            Inspect inferred field paths, data types, nullability, and cross-page schema drift per API dataset.
+            Inspect inferred field paths, data types, nullability, and
+            cross-page schema drift per API dataset.
           </p>
         </div>
 
@@ -88,7 +89,8 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
             >
               {sources.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.label} — {s.httpMethod} {s.normalizedEndpoint.replace(/^https?:\/\/[^/]+/, '')}
+                  {s.label} — {s.httpMethod}{" "}
+                  {s.normalizedEndpoint.replace(/^https?:\/\/[^/]+/, "")}
                 </option>
               ))}
             </select>
@@ -98,11 +100,17 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
 
       {/* Quick Dataset Switcher Pills */}
       {sources.length > 1 && (
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label="API Dataset Schemas">
+        <div
+          className="flex flex-wrap gap-2"
+          role="tablist"
+          aria-label="API Dataset Schemas"
+        >
           {sources.map((s) => {
             const isActive = (activeSource?.id || selectedSourceId) === s.id;
             const schemaForSource = schemas.find((sc) => sc.sourceId === s.id);
-            const count = schemaForSource ? Object.keys(schemaForSource.fields).length : 0;
+            const count = schemaForSource
+              ? Object.keys(schemaForSource.fields).length
+              : 0;
             return (
               <button
                 key={s.id}
@@ -112,16 +120,16 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
                 onClick={() => setSelectedSourceId(s.id)}
                 className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold border transition ${
                   isActive
-                    ? 'bg-obsidian-900 text-brand-300 border-obsidian-800 shadow-xs'
-                    : 'bg-white text-stone-700 border-stone-200 hover:border-brand-400 hover:bg-brand-50/40'
+                    ? "bg-obsidian-900 text-brand-300 border-obsidian-800 shadow-xs"
+                    : "bg-white text-stone-700 border-stone-200 hover:border-brand-400 hover:bg-brand-50/40"
                 }`}
               >
                 <span>{s.label}</span>
                 <span
                   className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${
                     isActive
-                      ? 'bg-obsidian-800 text-brand-200'
-                      : 'bg-stone-100 text-stone-600'
+                      ? "bg-obsidian-800 text-brand-200"
+                      : "bg-stone-100 text-stone-600"
                   }`}
                 >
                   {count} fields
@@ -134,37 +142,56 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
 
       {!activeSchema ? (
         <div className="bg-white rounded-2xl shadow-xs border border-stone-200 p-12 text-center text-stone-500 text-xs">
-          <Layers className="w-10 h-10 text-stone-300 mx-auto mb-3" aria-hidden="true" />
+          <Layers
+            className="w-10 h-10 text-stone-300 mx-auto mb-3"
+            aria-hidden="true"
+          />
           <p className="font-semibold text-stone-700 text-sm mb-1">
             No schemas discovered yet
           </p>
-          <p>Start capturing API responses to automatically infer field structures and types.</p>
+          <p>
+            Start capturing API responses to automatically infer field
+            structures and types.
+          </p>
         </div>
       ) : (
         <div className="space-y-6">
           {/* Schema Metadata Card */}
           <div className="bg-white rounded-2xl shadow-xs border border-stone-200 p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 text-xs">
             <div>
-              <span className="text-stone-400 font-medium block mb-1">Dataset Label</span>
+              <span className="text-stone-400 font-medium block mb-1">
+                Dataset Label
+              </span>
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-brand-100 border border-brand-300 text-brand-900 font-bold">
-                <Tag className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" />
-                {activeSource?.label || 'Dataset'}
+                <Tag
+                  className="w-3.5 h-3.5 text-brand-700"
+                  aria-hidden="true"
+                />
+                {activeSource?.label || "Dataset"}
               </span>
             </div>
             <div className="lg:col-span-2">
-              <span className="text-stone-400 font-medium block mb-1">Normalized Endpoint</span>
+              <span className="text-stone-400 font-medium block mb-1">
+                Normalized Endpoint
+              </span>
               <span className="font-mono font-semibold text-stone-800 break-all">
-                {activeSource ? `${activeSource.httpMethod} ${activeSource.normalizedEndpoint}` : activeSchema.sourceId}
+                {activeSource
+                  ? `${activeSource.httpMethod} ${activeSource.normalizedEndpoint}`
+                  : activeSchema.sourceId}
               </span>
             </div>
             <div>
-              <span className="text-stone-400 font-medium block mb-1">Extraction Path</span>
+              <span className="text-stone-400 font-medium block mb-1">
+                Extraction Path
+              </span>
               <code className="inline-block bg-brand-50 border border-brand-200 text-brand-900 font-bold px-2 py-0.5 rounded-md font-mono">
                 {activeSchema.inferredRecordPath}
               </code>
             </div>
             <div>
-              <span className="text-stone-400 font-medium block mb-1">Fields & Samples</span>
+              <span className="text-stone-400 font-medium block mb-1">
+                Fields & Samples
+              </span>
               <span className="font-bold text-stone-900">
                 {allFields.length} fields
               </span>
@@ -173,7 +200,8 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
               </span>
               {conflictCount > 0 && (
                 <span className="block text-[11px] text-amber-700 font-semibold mt-0.5">
-                  {conflictCount} type drift {conflictCount === 1 ? 'warning' : 'warnings'}
+                  {conflictCount} type drift{" "}
+                  {conflictCount === 1 ? "warning" : "warnings"}
                 </span>
               )}
             </div>
@@ -210,30 +238,49 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
             >
               <table className="w-full text-left text-xs text-stone-700">
                 <caption id={captionId} className="visually-hidden">
-                  Inferred schema fields for {activeSource?.label || 'selected API dataset'}
+                  Inferred schema fields for{" "}
+                  {activeSource?.label || "selected API dataset"}
                 </caption>
                 <thead className="bg-stone-100/90 text-[11px] font-bold uppercase tracking-wider text-stone-600 border-b border-stone-200">
                   <tr>
-                    <th scope="col" className="px-5 py-3">Readable Column</th>
-                    <th scope="col" className="px-5 py-3">JSON Dot Path</th>
-                    <th scope="col" className="px-5 py-3">Detected Types</th>
-                    <th scope="col" className="px-5 py-3">Optionality</th>
-                    <th scope="col" className="px-5 py-3">Consistency</th>
-                    <th scope="col" className="px-5 py-3">Observed Sample Values</th>
+                    <th scope="col" className="px-5 py-3">
+                      Readable Column
+                    </th>
+                    <th scope="col" className="px-5 py-3">
+                      JSON Dot Path
+                    </th>
+                    <th scope="col" className="px-5 py-3">
+                      Detected Types
+                    </th>
+                    <th scope="col" className="px-5 py-3">
+                      Optionality
+                    </th>
+                    <th scope="col" className="px-5 py-3">
+                      Consistency
+                    </th>
+                    <th scope="col" className="px-5 py-3">
+                      Observed Sample Values
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-100">
                   {filteredFields.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-10 text-center text-stone-400">
+                      <td
+                        colSpan={6}
+                        className="px-6 py-10 text-center text-stone-400"
+                      >
                         No fields match "{fieldQuery}".
                       </td>
                     </tr>
                   ) : (
                     filteredFields.map((field) => (
-                      <tr key={field.path} className="hover:bg-brand-50/30 transition">
+                      <tr
+                        key={field.path}
+                        className="hover:bg-brand-50/30 transition"
+                      >
                         <td className="px-5 py-3 font-semibold text-stone-900 whitespace-nowrap">
-                          {formatColumnHeader(field.path, 'readable')}
+                          {formatColumnHeader(field.path, "readable")}
                         </td>
                         <td className="px-5 py-3 font-mono text-[11px] text-stone-700 whitespace-nowrap">
                           {field.path}
@@ -244,15 +291,15 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
                               <span
                                 key={t}
                                 className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
-                                  t === 'string'
-                                    ? 'bg-sky-50 text-sky-800 border-sky-200'
-                                    : t === 'number'
-                                    ? 'bg-brand-50 text-brand-900 border-brand-300'
-                                    : t === 'boolean'
-                                    ? 'bg-teal-50 text-teal-800 border-teal-200'
-                                    : t === 'array'
-                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                    : 'bg-stone-100 text-stone-700 border-stone-200'
+                                  t === "string"
+                                    ? "bg-sky-50 text-sky-800 border-sky-200"
+                                    : t === "number"
+                                      ? "bg-brand-50 text-brand-900 border-brand-300"
+                                      : t === "boolean"
+                                        ? "bg-teal-50 text-teal-800 border-teal-200"
+                                        : t === "array"
+                                          ? "bg-amber-50 text-amber-800 border-amber-200"
+                                          : "bg-stone-100 text-stone-700 border-stone-200"
                                 }`}
                               >
                                 {t}
@@ -274,19 +321,31 @@ export const Schemas: React.FC<Props> = ({ schemas, sources }) => {
                         <td className="px-5 py-3 whitespace-nowrap">
                           {field.hasConflict ? (
                             <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700">
-                              <AlertCircle className="w-3.5 h-3.5" aria-hidden="true" /> Type Drift
+                              <AlertCircle
+                                className="w-3.5 h-3.5"
+                                aria-hidden="true"
+                              />{" "}
+                              Type Drift
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-[11px] font-medium text-brand-800">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" /> Consistent
+                              <CheckCircle2
+                                className="w-3.5 h-3.5 text-brand-700"
+                                aria-hidden="true"
+                              />{" "}
+                              Consistent
                             </span>
                           )}
                         </td>
                         <td
                           className="px-5 py-3 font-mono text-[11px] text-stone-500 max-w-xs truncate"
-                          title={field.sampleValues.map((v) => JSON.stringify(v)).join(', ')}
+                          title={field.sampleValues
+                            .map((v) => JSON.stringify(v))
+                            .join(", ")}
                         >
-                          {field.sampleValues.map((v) => JSON.stringify(v)).join(', ')}
+                          {field.sampleValues
+                            .map((v) => JSON.stringify(v))
+                            .join(", ")}
                         </td>
                       </tr>
                     ))

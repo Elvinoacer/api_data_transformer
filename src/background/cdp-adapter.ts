@@ -14,13 +14,97 @@ export interface ScrollPaginationResult {
   reachedBottom: boolean;
 }
 
+export interface RequestMetadata {
+  requestId: string;
+  url: string;
+  method: string;
+  postData?: string;
+  headers: Record<string, string>;
+}
+
+export interface EmittedCdpResponse {
+  requestId: string;
+  url: string;
+  method: string;
+  status: number;
+  mimeType: string;
+  headers?: Record<string, any>;
+  postData?: string;
+}
+
+export class CdpNetworkAdapter {
+  private requestPayloadMap = new Map<string, string>();
+  private listeners: ((response: EmittedCdpResponse) => void)[] = [];
+
+  onResponse(listener: (response: EmittedCdpResponse) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
+  }
+
+  handleDebuggerEvent(
+    _debuggee: chrome.debugger.Debuggee,
+    method: string,
+    params: any,
+  ): void {
+    if (method === "Network.requestWillBeSent") {
+      const { requestId, request } = params || {};
+      if (requestId && request?.postData) {
+        this.requestPayloadMap.set(requestId, request.postData);
+      }
+    }
+
+    if (method === "Network.responseReceived") {
+      const { requestId, response } = params || {};
+      if (requestId && response) {
+        const postData = this.requestPayloadMap.get(requestId);
+        this.emitResponse({
+          requestId,
+          url: response.url || "",
+          method: response.requestMethod || response.method || "GET",
+          status: response.status || 200,
+          mimeType: response.mimeType || "",
+          headers: response.headers,
+          postData,
+        });
+      }
+    }
+
+    if (method === "Network.loadingFinished") {
+      const { requestId } = params || {};
+      if (requestId) {
+        setTimeout(() => this.requestPayloadMap.delete(requestId), 30000);
+      }
+    }
+  }
+
+  emitResponse(response: EmittedCdpResponse): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(response);
+      } catch (err) {
+        console.error("[CdpNetworkAdapter] Listener error:", err);
+      }
+    }
+  }
+
+  getRequestPayload(requestId: string): string | undefined {
+    return this.requestPayloadMap.get(requestId);
+  }
+
+  clear(): void {
+    this.requestPayloadMap.clear();
+  }
+}
+
 export const cdpAdapter = {
   async attach(tabId: number): Promise<void> {
-    await chrome.debugger.attach({ tabId }, '1.3');
+    await chrome.debugger.attach({ tabId }, "1.3");
   },
 
   async enableNetwork(tabId: number): Promise<void> {
-    await chrome.debugger.sendCommand({ tabId }, 'Network.enable', {
+    await chrome.debugger.sendCommand({ tabId }, "Network.enable", {
       maxTotalBufferSize: 100_000_000,
       maxResourceBufferSize: 15_000_000,
     });
@@ -29,12 +113,12 @@ export const cdpAdapter = {
   async getResponseBody(tabId: number, requestId: string): Promise<string> {
     const result = (await chrome.debugger.sendCommand(
       { tabId },
-      'Network.getResponseBody',
-      { requestId }
+      "Network.getResponseBody",
+      { requestId },
     )) as CdpResponseBodyResult;
 
-    if (!result || typeof result.body !== 'string') {
-      throw new Error('Empty response body returned by debugger');
+    if (!result || typeof result.body !== "string") {
+      throw new Error("Empty response body returned by debugger");
     }
 
     if (result.base64Encoded) {
@@ -43,7 +127,7 @@ export const cdpAdapter = {
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      return new TextDecoder('utf-8').decode(bytes);
+      return new TextDecoder("utf-8").decode(bytes);
     }
 
     return result.body;
@@ -52,8 +136,11 @@ export const cdpAdapter = {
   /**
    * Locates and activates the "Next Page" / "Load More" control inside the attached target tab.
    */
-  async clickNextPageInTab(tabId: number, customSelector?: string): Promise<DomPaginationResult> {
-    const safeSelectorJson = JSON.stringify(customSelector?.trim() || '');
+  async clickNextPageInTab(
+    tabId: number,
+    customSelector?: string,
+  ): Promise<DomPaginationResult> {
+    const safeSelectorJson = JSON.stringify(customSelector?.trim() || "");
     const expression = `(() => {
       const customSel = ${safeSelectorJson};
       const isUsable = (el) => {
@@ -129,16 +216,20 @@ export const cdpAdapter = {
       return { clicked: true, label };
     })()`;
 
-    const evalRes = (await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    })) as any;
+    const evalRes = (await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    )) as any;
 
     return (
       evalRes?.result?.value || {
         clicked: false,
-        reason: 'Could not evaluate pagination controls in target tab',
+        reason: "Could not evaluate pagination controls in target tab",
       }
     );
   },
@@ -156,10 +247,14 @@ export const cdpAdapter = {
       return { scrolled: docHeight > window.innerHeight, reachedBottom };
     })()`;
 
-    const evalRes = (await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-    })) as any;
+    const evalRes = (await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+      },
+    )) as any;
 
     return evalRes?.result?.value || { scrolled: false, reachedBottom: true };
   },
@@ -168,7 +263,10 @@ export const cdpAdapter = {
    * Triggers an in-tab authenticated GET fetch so the browser's own session cookies are used
    * inside the page without ever exposing credentials to the extension, while CDP captures the response.
    */
-  async fetchUrlInTab(tabId: number, targetUrl: string): Promise<{ ok: boolean; status?: number; error?: string }> {
+  async fetchUrlInTab(
+    tabId: number,
+    targetUrl: string,
+  ): Promise<{ ok: boolean; status?: number; error?: string }> {
     const safeUrl = JSON.stringify(targetUrl);
     const expression = `(async () => {
       try {
@@ -184,13 +282,22 @@ export const cdpAdapter = {
       }
     })()`;
 
-    const evalRes = (await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    })) as any;
+    const evalRes = (await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    )) as any;
 
-    return evalRes?.result?.value || { ok: false, error: 'In-tab fetch evaluation failed' };
+    return (
+      evalRes?.result?.value || {
+        ok: false,
+        error: "In-tab fetch evaluation failed",
+      }
+    );
   },
 
   async detach(tabId: number): Promise<void> {

@@ -23,14 +23,16 @@ This comprehensive guide explains how to install, configure, operate, and troubl
 8. [Spreadsheet Formula Injection Defense](#8-spreadsheet-formula-injection-defense)
 9. [Privacy, Permissions & Security Policy](#9-privacy-permissions--security-policy)
 10. [Troubleshooting & Frequently Asked Questions](#10-troubleshooting--frequently-asked-questions)
+11. [BandaGo POS to Sphere Pharmacy Live Synchronization](#11-bandago-pos-to-sphere-pharmacy-live-synchronization)
 
 ---
 
 ## 1. Platform Overview & Core Concept
 
-The **Live Network Data Collector** is a local-first Chrome browser extension (Manifest V3) designed for developers, data engineers, researchers, and analysts. 
+The **Live Network Data Collector** is a local-first Chrome browser extension (Manifest V3) designed for developers, data engineers, researchers, and analysts.
 
 ### Why Use This Instead of Traditional Web Scrapers?
+
 - **No Reverse Engineering Required:** You do not need to decipher session tokens, decode anti-bot fingerprints, or manually reconstruct complicated pagination requests.
 - **Natural User Navigation:** You log in and navigate the target website in a normal browser tab. As you browse, paginate, filter, or scroll, the extension intercepts and records the underlying JSON API responses.
 - **Accurate Accumulation:** Moving from Page 1 to Page 2 to Page 3 accumulates records continuously without overwriting previous data. Revisiting Page 1 updates records without creating duplicate items.
@@ -58,6 +60,7 @@ flowchart TD
 ## 2. Prerequisites & Installation
 
 ### System Requirements
+
 - Google Chrome version **118** or newer.
 - Node.js version **18+** and npm (for building from source).
 
@@ -177,14 +180,14 @@ The dashboard is structured into 7 primary views accessible via the top navigati
 
 The Overview tab provides a high-level operational cockpit:
 
-| Metric | What It Represents |
-|---|---|
-| **Responses Observed** | Total number of eligible JSON API responses detected on the wire. |
-| **Responses Saved** | Number of raw HTTP response bodies successfully committed to IndexedDB. |
-| **Unique Records** | Total number of materialized, deduplicated entities currently in the dataset. |
-| **Endpoint Groups** | Number of unique normalized API routes discovered (e.g. `/api/medications`). |
-| **Storage Used** | Approximate local browser storage used by stored payloads. |
-| **Capture Errors** | Any body retrieval failures, network timeouts, or parse exceptions. |
+| Metric                 | What It Represents                                                            |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| **Responses Observed** | Total number of eligible JSON API responses detected on the wire.             |
+| **Responses Saved**    | Number of raw HTTP response bodies successfully committed to IndexedDB.       |
+| **Unique Records**     | Total number of materialized, deduplicated entities currently in the dataset. |
+| **Endpoint Groups**    | Number of unique normalized API routes discovered (e.g. `/api/medications`).  |
+| **Storage Used**       | Approximate local browser storage used by stored payloads.                    |
+| **Capture Errors**     | Any body retrieval failures, network timeouts, or parse exceptions.           |
 
 Below the metrics, the **Recent Event & Error Log** displays timestamped diagnostic notices if an endpoint failed to load or exceeded payload limits.
 
@@ -250,17 +253,20 @@ Located under the **Schemas** tab ([`src/dashboard/pages/Schemas.tsx`](file:///h
 Located under the **Exports** tab ([`src/dashboard/pages/Exports.tsx`](file:///home/elvin/Projects/tutorials/api-data-csv-extractor/src/dashboard/pages/Exports.tsx)):
 
 #### 1. Choose Your Export Format
+
 - **Flattened CSV:** Converts nested objects into dot-path column headers (e.g. `dimensions.width`). Nested arrays are serialized to JSON strings. Ready for Excel, Google Sheets, or Python Pandas.
 - **Raw CSV:** Exports metadata columns (`id`, `capturedAt`, `source`) alongside a single `raw_json` column.
 - **JSON Lines (`.jsonl`):** Outputs one complete, unflattened JSON object per line. Recommended for streaming ETL jobs, Spark, BigQuery, and Elasticsearch.
 - **Session JSON Bundle (`.json`):** Comprehensive hierarchical export containing session configuration, endpoint schemas, and all raw records.
 
 #### 2. Configure Security & Output Options
+
 - **Formula Injection Defense:** Enabled by default. Escapes dangerous leading characters (`=`, `+`, `-`, `@`) to protect against malicious spreadsheet formulas.
 - **UTF-8 BOM Header:** Prepends the standard `\uFEFF` Byte Order Mark so Microsoft Excel opens international characters without character encoding errors.
 - **Blank Empty Cells:** Formats missing or null properties as blank cells rather than literal `"null"` text.
 
 #### 3. Live Preview & Download
+
 The real-time preview panel displays the first 8 lines of the generated output and estimated filename. Click **Download File** to save the file to your computer.
 
 ---
@@ -294,6 +300,7 @@ For long browsing sessions where you prefer not to switch tabs, use the **Chrome
 ## 7. Deduplication & Extraction Deep-Dive
 
 ### How Deduplication Works
+
 When an API response finishes loading, items are parsed using the source's `recordPath`. For each item:
 
 1. **Identity Key Lookup:**
@@ -312,9 +319,11 @@ When an API response finishes loading, items are parsed using the source's `reco
 ## 8. Spreadsheet Formula Injection Defense
 
 ### The Threat (CSV Injection / CWE-1236)
+
 When exporting data from public websites, text fields may inadvertently or maliciously begin with formula characters such as `=`, `+`, `-`, or `@`. When opened in Microsoft Excel, LibreOffice Calc, or Google Sheets, the spreadsheet software may execute these cells as active formulas or external DDE commands.
 
 ### The Collector's Defense
+
 The export generator ([`src/export/sanitize.ts`](file:///home/elvin/Projects/tutorials/api-data-csv-extractor/src/export/sanitize.ts)) automatically inspects cell values:
 
 ```ts
@@ -331,9 +340,11 @@ By prefixing with an inert single quote (`'`), spreadsheet engines treat the cel
 ## 9. Privacy, Permissions & Security Policy
 
 ### Why Does the Extension Request the `debugger` Permission?
+
 Chrome extensions cannot inspect HTTP response bodies from standard cross-origin tabs using normal web APIs. The `chrome.debugger` API allows the extension to attach to a **single, user-selected tab** using the Chrome DevTools Protocol (`Network.enable` and `Network.getResponseBody`).
 
 ### Privacy Guarantees
+
 - **No Cookie or Password Access:** The extension never requests the `cookies` permission and never inspects password input fields.
 - **Scoped Attachment:** The debugger attaches strictly to the tab you select. It does not monitor arbitrary browser windows or tabs.
 - **Sensitive Parameter Redaction:** URL query strings containing session tokens, OAuth codes, or API keys are scrubbed before storage.
@@ -344,10 +355,13 @@ Chrome extensions cannot inspect HTTP response bodies from standard cross-origin
 ## 10. Troubleshooting & Frequently Asked Questions
 
 ### Q: Chrome shows an infobar saying "Live Network Data Collector started debugging this browser". Is that normal?
+
 **Yes.** This is Chrome's standard security notification whenever an extension uses the `chrome.debugger` API. It reminds you that the selected tab's network traffic is being observed.
 
 ### Q: Why does the status show "Detached"?
+
 A capture session will enter the `Detached` state if:
+
 1. You close the target browser tab.
 2. You open Chrome DevTools (F12) on the target tab (Chrome only permits one debugger client attached to a tab at a time).
 3. You click "Cancel" on Chrome's debugging infobar.
@@ -355,22 +369,67 @@ A capture session will enter the `Detached` state if:
 **Solution:** Simply return to the collector dashboard and click **Start Capture** to reattach when you are ready.
 
 ### Q: My website loads data, but no responses appear in the dashboard.
+
 Check the following:
+
 1. **Scope:** Is the request coming from the same hostname you allowed when starting capture?
 2. **Content-Type:** The collector monitors JSON payloads (`application/json`, `application/ld+json`, etc.). It automatically ignores HTML, CSS, images, and script assets.
 3. **Excluded Endpoints:** Check the **Settings** tab to ensure the URL does not contain an excluded keyword (e.g. `/auth`, `/login`).
 4. **Pause State:** Verify that the status badge is green (**Recording**) and not amber (**Paused**).
 
 ### Q: Can I run captures on multiple tabs simultaneously?
+
 In the MVP release, the collector captures **one active tab at a time** to guarantee determinism, prevent session cross-contamination, and protect memory. To record a different tab, click **Stop** and start a new session targeting the other tab.
+
+---
+
+## 11. BandaGo POS to Sphere Pharmacy Live Synchronization
+
+The platform includes a dedicated, zero-touch ingestion and synchronization engine designed specifically for pharmacies operating **BandaGo POS** (`go.bandahealth.org` - OSGi GraphQL on iDempiere ERP) alongside **Sphere Pharmacy** storefronts.
+
+### Key Capabilities
+
+1. **First-Expired, First-Out (FEFO) Stock Calculation:**
+   - Evaluates multi-batch storage records (`storageOnHand` and `M_StorageOnHand`).
+   - Automatically detects and discards expired batches relative to current UTC time.
+   - Sums only legally sellable physical inventory units.
+   - Ignores depleted batches (`qtyOnHand <= 0`) so they do not falsely skew the calculated `nearestExpiryDate`.
+   - Materializes the nearest valid expiry date for display on Sphere Pharmacy storefronts.
+
+2. **Kenya Pharmacy and Poisons Board (PPB) Prescription Scheduling:**
+   - Automatically flags prescription-only medicines (POM) based on schedule keywords (`amoxicillin`, `ciprofloxacin`, `metronidazole`, `metformin`, `salbutamol`, `insulin`, `artemether`, etc.).
+   - Honors category prescription flags and BandaGo's `bh_hasexpiration` indicators.
+   - Automatically maps categories to standard Sphere slugs (`cold-flu`, `heart-health`, `pain-fever`, `diabetes`, `first-aid`, `antibiotic`, `vitamins`).
+
+3. **Offline Sync Ledger & In-Flight Race-Condition Protection:**
+   - Changes are saved to an IndexedDB outbound queue (`sync_queue`) with status tracking (`PENDING`, `SYNCING`, `FAILED`).
+   - If network connectivity drops, items remain securely buffered locally.
+   - Failed items increment retry counters with exponential backoff (up to 5 retries).
+   - In-flight safety: If fresh inventory arrives while an item is actively syncing, the item is preserved in `PENDING` status rather than being deleted upon HTTP 200 completion, ensuring the latest stock delta is always dispatched.
+
+4. **Background Catalog Poller:**
+   - Uses Chrome's `alarms` API to execute periodic catalog checks every 10 minutes.
+   - Safely executes queries inside the pharmacist's authenticated `go.bandahealth.org` tab context via `chrome.scripting`.
+   - Also triggers automatic queue flushing whenever the alarm fires to drain offline backlogs.
+
+### Configuration in Settings
+
+1. Open the dashboard and navigate to **Settings**.
+2. Under **Sphere Pharmacy Live Sync (BandaGo Bridge)**:
+   - **Sphere Ingestion Endpoint URL:** Enter the full destination URL (e.g., `https://your-pharmacy-store.com/api/integrations/bandago/sync` or local test `http://localhost:5173/api/integrations/bandago/sync`).
+   - **Sync API Key:** Enter your Bearer secret key (configured as `BANDAGO_SYNC_API_KEY` on your Sphere Pharmacy server).
+   - **Auto Sync:** Toggle **ON**.
+   - **Test Handshake:** Click to verify API connectivity and authentication.
+   - **Flush Pending:** Manually dispatch any pending offline queue items.
+   - **Poll Active BandaGo Tab:** Manually trigger an immediate catalog query on any open BandaGo tab.
 
 ---
 
 ## Summary of Useful Commands
 
-| Task | Command |
-|---|---|
-| Run Unit Tests | `npm test` |
-| Start Dev Server & Demo Target | `npm run dev` |
-| Build Unpacked Extension | `npm run build` |
-| Preview Production Build | `npm run preview` |
+| Task                           | Command           |
+| ------------------------------ | ----------------- |
+| Run Unit Tests                 | `npm test`        |
+| Start Dev Server & Demo Target | `npm run dev`     |
+| Build Unpacked Extension       | `npm run build`   |
+| Preview Production Build       | `npm run preview` |

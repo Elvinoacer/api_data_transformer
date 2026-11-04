@@ -1,4 +1,4 @@
-import { cdpAdapter } from './cdp-adapter';
+import { cdpAdapter } from "./cdp-adapter";
 import {
   activityRepo,
   calculateSessionMetrics,
@@ -9,20 +9,26 @@ import {
   sessionRepo,
   settingsRepo,
   sourceRepo,
-} from '../data/repositories';
-import { checkResponseEligibility, parseApiJsonBody } from '../privacy/source-policy';
+} from "../data/repositories";
+import {
+  checkResponseEligibility,
+  parseApiJsonBody,
+} from "../privacy/source-policy";
 import {
   extractOperationName,
   normalizeEndpoint,
   redactSensitiveUrl,
-} from '../privacy/url-redaction';
-import { extractItemsByPath } from '../extraction/path-selector';
-import { consolidateRecords, generateStableContentHash } from '../extraction/deduplicate';
-import { inferSchemaFromRecords } from '../extraction/schema-inference';
+} from "../privacy/url-redaction";
+import { extractItemsByPath } from "../extraction/path-selector";
+import {
+  consolidateRecords,
+  generateStableContentHash,
+} from "../extraction/deduplicate";
+import { inferSchemaFromRecords } from "../extraction/schema-inference";
 import {
   buildPageUrlsForSource,
   detectPaginationFromResponse,
-} from '../extraction/pagination-detector';
+} from "../extraction/pagination-detector";
 import {
   AutoPaginateConfig,
   AutoPaginateState,
@@ -30,7 +36,9 @@ import {
   CaptureStatus,
   RawResponse,
   ScopeMode,
-} from '../shared/types';
+} from "../shared/types";
+import { BandaGoNormalizer } from "../extraction/bandago-normalizer";
+import { SphereSyncClient } from "../sync/sphere-client";
 
 interface TrackedRequestMeta {
   httpMethod: string;
@@ -51,12 +59,12 @@ interface PendingRequest {
 }
 
 const DEFAULT_AUTO_PAGINATE_STATE: AutoPaginateState = {
-  status: 'idle',
+  status: "idle",
   pagesAttempted: 0,
   maxPages: 0,
   initialUniqueRecords: 0,
   currentUniqueRecords: 0,
-  message: 'Ready',
+  message: "Ready",
 };
 
 function sleep(ms: number): Promise<void> {
@@ -71,11 +79,13 @@ class CaptureController {
   private initPromise: Promise<void> | null = null;
   private isStartingOrStopping = false;
 
-  private autoPaginateState: AutoPaginateState = { ...DEFAULT_AUTO_PAGINATE_STATE };
+  private autoPaginateState: AutoPaginateState = {
+    ...DEFAULT_AUTO_PAGINATE_STATE,
+  };
   private stopAutoPaginateRequested = false;
 
   public getStatus(): CaptureStatus {
-    return this.currentSession?.status || 'idle';
+    return this.currentSession?.status || "idle";
   }
 
   public getActiveSession(): CaptureSession | null {
@@ -98,7 +108,7 @@ class CaptureController {
           this.activeTabId = session.targetTabId;
           await this.syncBadge(session.status);
         } else {
-          await this.syncBadge('idle');
+          await this.syncBadge("idle");
         }
       })();
     }
@@ -107,15 +117,15 @@ class CaptureController {
 
   private async syncBadge(status: CaptureStatus): Promise<void> {
     try {
-      if (typeof chrome === 'undefined' || !chrome.action?.setBadgeText) return;
-      if (status === 'recording') {
-        await chrome.action.setBadgeText({ text: 'REC' });
-        await chrome.action.setBadgeBackgroundColor({ color: '#4d7c0f' });
-      } else if (status === 'paused') {
-        await chrome.action.setBadgeText({ text: 'PAU' });
-        await chrome.action.setBadgeBackgroundColor({ color: '#d97706' });
+      if (typeof chrome === "undefined" || !chrome.action?.setBadgeText) return;
+      if (status === "recording") {
+        await chrome.action.setBadgeText({ text: "REC" });
+        await chrome.action.setBadgeBackgroundColor({ color: "#4d7c0f" });
+      } else if (status === "paused") {
+        await chrome.action.setBadgeText({ text: "PAU" });
+        await chrome.action.setBadgeBackgroundColor({ color: "#d97706" });
       } else {
-        await chrome.action.setBadgeText({ text: '' });
+        await chrome.action.setBadgeText({ text: "" });
       }
     } catch {
       // Ignore badge update failures in non-extension contexts
@@ -132,14 +142,19 @@ class CaptureController {
     await this.init();
 
     if (this.isStartingOrStopping) {
-      throw new Error('Capture transition is already in progress. Please wait a moment.');
+      throw new Error(
+        "Capture transition is already in progress. Please wait a moment.",
+      );
     }
 
     if (
       this.currentSession &&
-      (this.currentSession.status === 'recording' || this.currentSession.status === 'starting')
+      (this.currentSession.status === "recording" ||
+        this.currentSession.status === "starting")
     ) {
-      throw new Error('A capture session is already recording. Stop it before starting a new one.');
+      throw new Error(
+        "A capture session is already recording. Stop it before starting a new one.",
+      );
     }
 
     this.isStartingOrStopping = true;
@@ -149,7 +164,8 @@ class CaptureController {
         targetTabId: params.tabId,
         originalUrl: params.originalUrl,
         allowedHostnames: params.allowedHostnames,
-        scopeMode: params.scopeMode || settings.defaultScopeMode || 'all_tab_apis',
+        scopeMode:
+          params.scopeMode || settings.defaultScopeMode || "all_tab_apis",
         label: params.label,
       });
 
@@ -162,29 +178,29 @@ class CaptureController {
       try {
         await cdpAdapter.attach(params.tabId);
         await cdpAdapter.enableNetwork(params.tabId);
-        await sessionRepo.updateStatus(session.id, 'recording');
-        session.status = 'recording';
-        await this.syncBadge('recording');
+        await sessionRepo.updateStatus(session.id, "recording");
+        session.status = "recording";
+        await this.syncBadge("recording");
 
         await activityRepo.logEvent({
           sessionId: session.id,
-          actor: 'user',
-          category: 'capture',
-          message: `Started capturing JSON APIs on ${params.allowedHostnames[0] || 'selected tab'}`,
-          detail: `Scope: ${session.scopeMode === 'all_tab_apis' ? 'All APIs called by tab' : 'Domain scoped'}`,
+          actor: "user",
+          category: "capture",
+          message: `Started capturing JSON APIs on ${params.allowedHostnames[0] || "selected tab"}`,
+          detail: `Scope: ${session.scopeMode === "all_tab_apis" ? "All APIs called by tab" : "Domain scoped"}`,
         });
 
         return session;
       } catch (err: any) {
         await cdpAdapter.detach(params.tabId);
-        const errMsg = err.message || 'Debugger attach failed';
-        await sessionRepo.updateStatus(session.id, 'error', errMsg);
-        session.status = 'error';
+        const errMsg = err.message || "Debugger attach failed";
+        await sessionRepo.updateStatus(session.id, "error", errMsg);
+        session.status = "error";
         session.errorReason = errMsg;
-        await this.syncBadge('error');
+        await this.syncBadge("error");
         await errorRepo.logError({
           sessionId: session.id,
-          kind: 'debugger_attach',
+          kind: "debugger_attach",
           message: errMsg,
           details: err,
         });
@@ -200,14 +216,14 @@ class CaptureController {
     const targetSessionId = sessionId || this.currentSession?.id;
     if (!targetSessionId || !this.currentSession) return;
 
-    await sessionRepo.updateStatus(targetSessionId, 'paused');
-    this.currentSession.status = 'paused';
-    await this.syncBadge('paused');
+    await sessionRepo.updateStatus(targetSessionId, "paused");
+    this.currentSession.status = "paused";
+    await this.syncBadge("paused");
     await activityRepo.logEvent({
       sessionId: targetSessionId,
-      actor: 'user',
-      category: 'capture',
-      message: 'Paused network recording',
+      actor: "user",
+      category: "capture",
+      message: "Paused network recording",
     });
   }
 
@@ -216,14 +232,14 @@ class CaptureController {
     const targetSessionId = sessionId || this.currentSession?.id;
     if (!targetSessionId || !this.currentSession) return;
 
-    await sessionRepo.updateStatus(targetSessionId, 'recording');
-    this.currentSession.status = 'recording';
-    await this.syncBadge('recording');
+    await sessionRepo.updateStatus(targetSessionId, "recording");
+    this.currentSession.status = "recording";
+    await this.syncBadge("recording");
     await activityRepo.logEvent({
       sessionId: targetSessionId,
-      actor: 'user',
-      category: 'capture',
-      message: 'Resumed network recording',
+      actor: "user",
+      category: "capture",
+      message: "Resumed network recording",
     });
   }
 
@@ -237,105 +253,118 @@ class CaptureController {
     }
 
     if (targetSessionId) {
-      await sessionRepo.updateStatus(targetSessionId, 'stopped');
+      await sessionRepo.updateStatus(targetSessionId, "stopped");
       await activityRepo.logEvent({
         sessionId: targetSessionId,
-        actor: 'user',
-        category: 'capture',
-        message: 'Stopped capture session and detached debugger cleanly',
+        actor: "user",
+        category: "capture",
+        message: "Stopped capture session and detached debugger cleanly",
       });
     }
 
     if (this.currentSession) {
-      this.currentSession.status = 'stopped';
+      this.currentSession.status = "stopped";
       this.currentSession.endedAt = new Date().toISOString();
     }
 
-    await this.syncBadge('stopped');
+    await this.syncBadge("stopped");
     this.activeTabId = null;
     this.trackedRequests.clear();
     this.pendingRequests.clear();
-    if (this.autoPaginateState.status === 'running') {
+    if (this.autoPaginateState.status === "running") {
       this.autoPaginateState = {
         ...this.autoPaginateState,
-        status: 'completed',
-        message: 'Stopped because capture session ended',
+        status: "completed",
+        message: "Stopped because capture session ended",
       };
     }
   }
 
-  public async handleDebuggerDetach(tabId: number, reason: string): Promise<void> {
+  public async handleDebuggerDetach(
+    tabId: number,
+    reason: string,
+  ): Promise<void> {
     await this.init();
     if (this.activeTabId === tabId && this.currentSession) {
       this.stopAutoPaginateRequested = true;
-      await sessionRepo.updateStatus(this.currentSession.id, 'detached', reason);
+      await sessionRepo.updateStatus(
+        this.currentSession.id,
+        "detached",
+        reason,
+      );
       await activityRepo.logEvent({
         sessionId: this.currentSession.id,
-        actor: 'system',
-        category: 'warning',
-        message: 'Debugger detached from target tab — saved data remains intact',
+        actor: "system",
+        category: "warning",
+        message:
+          "Debugger detached from target tab — saved data remains intact",
         detail: reason,
       });
-      this.currentSession.status = 'detached';
+      this.currentSession.status = "detached";
       this.activeTabId = null;
       this.trackedRequests.clear();
       this.pendingRequests.clear();
-      await this.syncBadge('detached');
+      await this.syncBadge("detached");
     }
   }
 
   public async handleTabRemoved(tabId: number): Promise<void> {
     await this.init();
     if (this.activeTabId === tabId) {
-      await this.handleDebuggerDetach(tabId, 'Target browser tab was closed');
+      await this.handleDebuggerDetach(tabId, "Target browser tab was closed");
     }
   }
 
   public async onCdpEvent(
     debuggee: chrome.debugger.Debuggee,
     method: string,
-    params?: any
+    params?: any,
   ): Promise<void> {
     await this.init();
 
-    if (!this.currentSession || !this.activeTabId || debuggee.tabId !== this.activeTabId) {
+    if (
+      !this.currentSession ||
+      !this.activeTabId ||
+      debuggee.tabId !== this.activeTabId
+    ) {
       return;
     }
 
     this.pruneStaleRequests();
 
-    if (method === 'Network.requestWillBeSent') {
+    if (method === "Network.requestWillBeSent") {
       const requestId = params?.requestId;
       const req = params?.request;
       if (requestId && req) {
         this.trackedRequests.set(requestId, {
-          httpMethod: (req.method || 'GET').toUpperCase(),
-          postData: typeof req.postData === 'string' ? req.postData.slice(0, 8192) : undefined,
+          httpMethod: (req.method || "GET").toUpperCase(),
+          postData:
+            typeof req.postData === "string"
+              ? req.postData.slice(0, 1048576)
+              : undefined,
           timestamp: Date.now(),
         });
       }
       return;
     }
 
-    if (method === 'Network.responseReceived') {
+    if (method === "Network.responseReceived") {
       const response = params.response;
       const requestId = params.requestId;
-      const resourceType = params.type || '';
-      const url = response.url || '';
-      const mimeType = response.mimeType || '';
+      const resourceType = params.type || "";
+      const url = response.url || "";
+      const mimeType = response.mimeType || "";
       const httpStatus = response.status || 200;
 
       const tracked = this.trackedRequests.get(requestId);
       const httpMethod =
-        tracked?.httpMethod ||
-        response.requestHeaders?.[':method'] ||
-        'GET';
+        tracked?.httpMethod || response.requestHeaders?.[":method"] || "GET";
 
       const settings = await settingsRepo.getSettings();
       const eligibility = checkResponseEligibility({
         url,
         allowedHostnames: this.currentSession.allowedHostnames,
-        scopeMode: this.currentSession.scopeMode || 'all_tab_apis',
+        scopeMode: this.currentSession.scopeMode || "all_tab_apis",
         mimeType,
         resourceType,
         sensitiveKeywords: settings.sensitiveEndpointKeywords,
@@ -355,7 +384,7 @@ class CaptureController {
         });
       }
       this.trackedRequests.delete(requestId);
-    } else if (method === 'Network.loadingFinished') {
+    } else if (method === "Network.loadingFinished") {
       const requestId = params.requestId;
       const pending = this.pendingRequests.get(requestId);
       this.trackedRequests.delete(requestId);
@@ -364,31 +393,36 @@ class CaptureController {
       this.pendingRequests.delete(requestId);
 
       // Only persist if currently recording
-      if (this.currentSession.status !== 'recording') {
+      if (this.currentSession.status !== "recording") {
         return;
       }
 
       await this.processFinishedResponse(pending);
-    } else if (method === 'Network.loadingFailed') {
+    } else if (method === "Network.loadingFailed") {
       const requestId = params.requestId;
       this.pendingRequests.delete(requestId);
       this.trackedRequests.delete(requestId);
     }
   }
 
-  private async processFinishedResponse(pending: PendingRequest): Promise<void> {
+  private async processFinishedResponse(
+    pending: PendingRequest,
+  ): Promise<void> {
     if (!this.currentSession) return;
     const settings = await settingsRepo.getSettings();
 
-    let bodyText = '';
+    let bodyText = "";
     try {
-      bodyText = await cdpAdapter.getResponseBody(pending.tabId, pending.requestId);
+      bodyText = await cdpAdapter.getResponseBody(
+        pending.tabId,
+        pending.requestId,
+      );
     } catch (err: any) {
       await errorRepo.logError({
         sessionId: this.currentSession.id,
-        kind: 'body_retrieval',
+        kind: "body_retrieval",
         url: redactSensitiveUrl(pending.url, settings.sensitiveUrlParams),
-        message: err.message || 'Could not retrieve response body',
+        message: err.message || "Could not retrieve response body",
       });
       return;
     }
@@ -397,7 +431,7 @@ class CaptureController {
     if (responseBytes > settings.maxResponseBodyBytes) {
       await errorRepo.logError({
         sessionId: this.currentSession.id,
-        kind: 'storage_limit',
+        kind: "storage_limit",
         url: redactSensitiveUrl(pending.url, settings.sensitiveUrlParams),
         message: `Response size (${(responseBytes / (1024 * 1024)).toFixed(2)} MB) exceeded limit (${(
           settings.maxResponseBodyBytes /
@@ -413,7 +447,7 @@ class CaptureController {
     if (!parseResult.ok) {
       // If MIME was permissive (e.g. text/plain or empty) and body isn't JSON at all, quietly skip non-JSON text
       const lowerMime = pending.mimeType.toLowerCase();
-      if (!lowerMime.includes('json')) {
+      if (!lowerMime.includes("json")) {
         return;
       }
 
@@ -428,7 +462,7 @@ class CaptureController {
         resourceType: pending.resourceType,
         mimeType: pending.mimeType,
         responseBody: bodyText,
-        parseStatus: 'invalid_json',
+        parseStatus: "invalid_json",
         responseBytes,
         operationName,
         errorMessage: parseResult.error,
@@ -438,9 +472,13 @@ class CaptureController {
     }
 
     const parsed = parseResult.data;
+    await this.handleBandaGoPayload(pending.url, pending.postData, parsed);
     const contentHash = generateStableContentHash(parsed);
     const responseId = `resp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const redactedUrl = redactSensitiveUrl(pending.url, settings.sensitiveUrlParams);
+    const redactedUrl = redactSensitiveUrl(
+      pending.url,
+      settings.sensitiveUrlParams,
+    );
 
     const extraction = await this.extractAndConsolidate({
       sessionId: this.currentSession.id,
@@ -463,7 +501,7 @@ class CaptureController {
       resourceType: pending.resourceType,
       mimeType: pending.mimeType,
       responseBody: bodyText,
-      parseStatus: 'parsed',
+      parseStatus: "parsed",
       responseBytes,
       contentHash,
       operationName,
@@ -472,6 +510,49 @@ class CaptureController {
     };
 
     await rawResponseRepo.addResponse(rawResponse);
+  }
+
+  /**
+   * Detects BandaGo POS payloads and normalizes them for outbound Sphere sync.
+   */
+  public async handleBandaGoPayload(
+    sourceUrl: string,
+    _postData: string | undefined,
+    dataNode: unknown,
+  ): Promise<void> {
+    if (!dataNode || typeof dataNode !== "object") return;
+
+    const lowerUrl = (sourceUrl || "").toLowerCase();
+    const isBandaCandidate =
+      lowerUrl.includes("/graphql") ||
+      lowerUrl.includes("bandahealth") ||
+      lowerUrl.includes("bandago") ||
+      lowerUrl.includes("idempiere");
+
+    if (!isBandaCandidate) return;
+
+    try {
+      const normalizedProducts =
+        BandaGoNormalizer.extractProductsFromPayload(dataNode);
+
+      if (normalizedProducts.length > 0) {
+        console.log(
+          `[BandaGo POS] Intercepted ${normalizedProducts.length} medications from ${sourceUrl}. Queueing Sphere sync...`,
+        );
+        await SphereSyncClient.enqueue(normalizedProducts);
+
+        if (this.currentSession) {
+          await activityRepo.logEvent({
+            sessionId: this.currentSession.id,
+            actor: "system",
+            category: "session",
+            message: `[BandaGo POS] Intercepted ${normalizedProducts.length} medications. Queued for Sphere Pharmacy sync.`,
+          });
+        }
+      }
+    } catch (err) {
+      console.error("[BandaGo POS] Error handling payload sync:", err);
+    }
   }
 
   private async extractAndConsolidate(params: {
@@ -515,12 +596,17 @@ class CaptureController {
 
     // Persist merged pagination metadata on the source
     if (
-      paginationMeta.strategy !== 'none' ||
+      paginationMeta.strategy !== "none" ||
       paginationMeta.totalRecords !== undefined ||
       paginationMeta.totalPages !== undefined
     ) {
-      const { mergePaginationState } = await import('../extraction/pagination-detector');
-      const mergedPag = mergePaginationState(source.pagination, paginationMeta, url);
+      const { mergePaginationState } =
+        await import("../extraction/pagination-detector");
+      const mergedPag = mergePaginationState(
+        source.pagination,
+        paginationMeta,
+        url,
+      );
       if (mergedPag) {
         source.pagination = mergedPag;
         await sourceRepo.updateSource(source.id, { pagination: mergedPag });
@@ -530,16 +616,16 @@ class CaptureController {
     if (initialSourceRes.isNew) {
       await activityRepo.logEvent({
         sessionId,
-        actor: 'system',
-        category: 'discovery',
+        actor: "system",
+        category: "discovery",
         message: `Discovered API dataset "${source.label}"`,
         detail: `${httpMethod} ${source.normalizedEndpoint} (${items.length} items on path "${source.recordPath}")`,
       });
     } else if (paginationMeta.currentPage && paginationMeta.totalPages) {
       await activityRepo.logEvent({
         sessionId,
-        actor: 'system',
-        category: 'pagination',
+        actor: "system",
+        category: "pagination",
         message: `Captured page ${paginationMeta.currentPage} of ${paginationMeta.totalPages} for "${source.label}"`,
         detail: `${items.length} items parsed`,
       });
@@ -550,7 +636,10 @@ class CaptureController {
     }
 
     // Load existing records for deduplication
-    const existingRecords = await recordRepo.getRecordsBySource(sessionId, source.id);
+    const existingRecords = await recordRepo.getRecordsBySource(
+      sessionId,
+      source.id,
+    );
 
     const consolidation = consolidateRecords({
       sessionId,
@@ -562,7 +651,10 @@ class CaptureController {
       policy: source.consolidationPolicy,
     });
 
-    await recordRepo.upsertRecords(consolidation.toInsert, consolidation.toUpdate);
+    await recordRepo.upsertRecords(
+      consolidation.toInsert,
+      consolidation.toUpdate,
+    );
 
     // Update inferred schema
     const existingSchema = await schemaRepo.getSchema(source.id);
@@ -581,15 +673,23 @@ class CaptureController {
   /**
    * Helps the user automatically step through multiple pages of an API safely inside the attached tab.
    */
-  public async startAutoPaginate(config: AutoPaginateConfig): Promise<AutoPaginateState> {
+  public async startAutoPaginate(
+    config: AutoPaginateConfig,
+  ): Promise<AutoPaginateState> {
     await this.init();
 
-    if (!this.currentSession || this.currentSession.status !== 'recording' || !this.activeTabId) {
-      throw new Error('Start or resume capture on the target tab before running Auto-Paginate.');
+    if (
+      !this.currentSession ||
+      this.currentSession.status !== "recording" ||
+      !this.activeTabId
+    ) {
+      throw new Error(
+        "Start or resume capture on the target tab before running Auto-Paginate.",
+      );
     }
 
-    if (this.autoPaginateState.status === 'running') {
-      throw new Error('Auto-pagination is already running.');
+    if (this.autoPaginateState.status === "running") {
+      throw new Error("Auto-pagination is already running.");
     }
 
     const tabId = this.activeTabId;
@@ -600,58 +700,60 @@ class CaptureController {
     const startMetrics = await calculateSessionMetrics(sessionId);
     this.stopAutoPaginateRequested = false;
     this.autoPaginateState = {
-      status: 'running',
+      status: "running",
       mode: config.mode,
       sourceId: config.sourceId,
       pagesAttempted: 0,
       maxPages,
       initialUniqueRecords: startMetrics.uniqueRecords,
       currentUniqueRecords: startMetrics.uniqueRecords,
-      message: 'Starting multi-page collection assistant...',
+      message: "Starting multi-page collection assistant...",
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     await activityRepo.logEvent({
       sessionId,
-      actor: 'user',
-      category: 'pagination',
+      actor: "user",
+      category: "pagination",
       message: `Started Auto-Pagination (${
-        config.mode === 'dom_click'
-          ? 'Auto-Click Next Page'
-          : config.mode === 'api_fetch'
-          ? 'In-Tab Page URL Fetcher'
-          : 'Infinite Scroll'
+        config.mode === "dom_click"
+          ? "Auto-Click Next Page"
+          : config.mode === "api_fetch"
+            ? "In-Tab Page URL Fetcher"
+            : "Infinite Scroll"
       })`,
       detail: `Max ${maxPages} pages, ${(delayMs / 1000).toFixed(1)}s interval`,
     });
 
     // Run pagination loop asynchronously so the UI receives immediate confirmation
-    this.runAutoPaginateLoop(tabId, sessionId, config, delayMs, maxPages).catch(async (err) => {
-      this.autoPaginateState = {
-        ...this.autoPaginateState,
-        status: 'error',
-        message: err?.message || 'Auto-pagination stopped due to an error',
-        updatedAt: new Date().toISOString(),
-      };
-      await activityRepo.logEvent({
-        sessionId,
-        actor: 'system',
-        category: 'warning',
-        message: `Auto-pagination error: ${err?.message || 'Unknown error'}`,
-      });
-    });
+    this.runAutoPaginateLoop(tabId, sessionId, config, delayMs, maxPages).catch(
+      async (err) => {
+        this.autoPaginateState = {
+          ...this.autoPaginateState,
+          status: "error",
+          message: err?.message || "Auto-pagination stopped due to an error",
+          updatedAt: new Date().toISOString(),
+        };
+        await activityRepo.logEvent({
+          sessionId,
+          actor: "system",
+          category: "warning",
+          message: `Auto-pagination error: ${err?.message || "Unknown error"}`,
+        });
+      },
+    );
 
     return this.getAutoPaginateState();
   }
 
   public async stopAutoPaginate(): Promise<AutoPaginateState> {
     this.stopAutoPaginateRequested = true;
-    if (this.autoPaginateState.status === 'running') {
+    if (this.autoPaginateState.status === "running") {
       this.autoPaginateState = {
         ...this.autoPaginateState,
-        status: 'stopping',
-        message: 'Stopping after current page completes...',
+        status: "stopping",
+        message: "Stopping after current page completes...",
         updatedAt: new Date().toISOString(),
       };
     }
@@ -663,21 +765,30 @@ class CaptureController {
     sessionId: string,
     config: AutoPaginateConfig,
     delayMs: number,
-    maxPages: number
+    maxPages: number,
   ): Promise<void> {
     let stalledSteps = 0;
 
-    if (config.mode === 'api_fetch' && config.sourceId) {
+    if (config.mode === "api_fetch" && config.sourceId) {
       const initialSource = await sourceRepo.getSource(config.sourceId);
       if (!initialSource?.pagination) {
-        throw new Error('Selected API source does not have URL pagination metadata yet. Try Auto-Click Next Page mode.');
+        throw new Error(
+          "Selected API source does not have URL pagination metadata yet. Try Auto-Click Next Page mode.",
+        );
       }
 
-      const prebuiltUrls = buildPageUrlsForSource(initialSource.pagination, maxPages);
+      const prebuiltUrls = buildPageUrlsForSource(
+        initialSource.pagination,
+        maxPages,
+      );
       let step = 0;
 
       while (step < maxPages && !this.stopAutoPaginateRequested) {
-        if (!this.currentSession || this.currentSession.status !== 'recording' || !this.activeTabId) {
+        if (
+          !this.currentSession ||
+          this.currentSession.status !== "recording" ||
+          !this.activeTabId
+        ) {
           break;
         }
 
@@ -685,7 +796,10 @@ class CaptureController {
         let targetUrl = prebuiltUrls[step];
         if (!targetUrl) {
           const refreshedSource = await sourceRepo.getSource(config.sourceId);
-          if (refreshedSource?.pagination?.hasNextPage && refreshedSource.pagination.nextUrl) {
+          if (
+            refreshedSource?.pagination?.hasNextPage &&
+            refreshedSource.pagination.nextUrl
+          ) {
             targetUrl = refreshedSource.pagination.nextUrl;
           } else {
             break;
@@ -726,7 +840,7 @@ class CaptureController {
         if (
           this.stopAutoPaginateRequested ||
           !this.currentSession ||
-          this.currentSession.status !== 'recording' ||
+          this.currentSession.status !== "recording" ||
           !this.activeTabId
         ) {
           break;
@@ -734,7 +848,7 @@ class CaptureController {
 
         const beforeMetrics = await calculateSessionMetrics(sessionId);
 
-        if (config.mode === 'dom_click') {
+        if (config.mode === "dom_click") {
           this.autoPaginateState = {
             ...this.autoPaginateState,
             pagesAttempted: step,
@@ -742,12 +856,17 @@ class CaptureController {
             updatedAt: new Date().toISOString(),
           };
 
-          const clickRes = await cdpAdapter.clickNextPageInTab(tabId, config.customSelector);
+          const clickRes = await cdpAdapter.clickNextPageInTab(
+            tabId,
+            config.customSelector,
+          );
           if (!clickRes.clicked) {
             this.autoPaginateState = {
               ...this.autoPaginateState,
-              status: 'completed',
-              message: clickRes.reason || 'Reached final page (no enabled Next button remaining).',
+              status: "completed",
+              message:
+                clickRes.reason ||
+                "Reached final page (no enabled Next button remaining).",
               updatedAt: new Date().toISOString(),
             };
             break;
@@ -764,8 +883,8 @@ class CaptureController {
           if (!scrollRes.scrolled) {
             this.autoPaginateState = {
               ...this.autoPaginateState,
-              status: 'completed',
-              message: 'Page is not scrollable.',
+              status: "completed",
+              message: "Page is not scrollable.",
               updatedAt: new Date().toISOString(),
             };
             break;
@@ -792,11 +911,12 @@ class CaptureController {
             updatedSource?.pagination &&
             updatedSource.pagination.hasNextPage === false &&
             updatedSource.pagination.totalPages &&
-            updatedSource.pagination.observedPages.length >= updatedSource.pagination.totalPages
+            updatedSource.pagination.observedPages.length >=
+              updatedSource.pagination.totalPages
           ) {
             this.autoPaginateState = {
               ...this.autoPaginateState,
-              status: 'completed',
+              status: "completed",
               message: `Collected all ${updatedSource.pagination.totalPages} pages for "${updatedSource.label}"!`,
               updatedAt: new Date().toISOString(),
             };
@@ -804,13 +924,16 @@ class CaptureController {
           }
         }
 
-        if (afterMetrics.responsesObserved === beforeMetrics.responsesObserved) {
+        if (
+          afterMetrics.responsesObserved === beforeMetrics.responsesObserved
+        ) {
           stalledSteps++;
           if (stalledSteps >= 2) {
             this.autoPaginateState = {
               ...this.autoPaginateState,
-              status: 'completed',
-              message: 'Stopped automatically: no new API responses triggered on the last 2 steps.',
+              status: "completed",
+              message:
+                "Stopped automatically: no new API responses triggered on the last 2 steps.",
               updatedAt: new Date().toISOString(),
             };
             break;
@@ -822,25 +945,29 @@ class CaptureController {
     }
 
     const finalMetrics = await calculateSessionMetrics(sessionId);
-    const added = Math.max(0, finalMetrics.uniqueRecords - this.autoPaginateState.initialUniqueRecords);
+    const added = Math.max(
+      0,
+      finalMetrics.uniqueRecords - this.autoPaginateState.initialUniqueRecords,
+    );
     const wasStoppedByUser = this.stopAutoPaginateRequested;
 
     this.autoPaginateState = {
       ...this.autoPaginateState,
-      status: 'completed',
+      status: "completed",
       currentUniqueRecords: finalMetrics.uniqueRecords,
       message: wasStoppedByUser
         ? `Stopped by user after ${this.autoPaginateState.pagesAttempted} step(s) (+${added} unique records).`
-        : this.autoPaginateState.status === 'completed' && this.autoPaginateState.message
-        ? `${this.autoPaginateState.message} (+${added} new unique records)`
-        : `Completed ${this.autoPaginateState.pagesAttempted} page step(s) — +${added} unique records added.`,
+        : this.autoPaginateState.status === "completed" &&
+            this.autoPaginateState.message
+          ? `${this.autoPaginateState.message} (+${added} new unique records)`
+          : `Completed ${this.autoPaginateState.pagesAttempted} page step(s) — +${added} unique records added.`,
       updatedAt: new Date().toISOString(),
     };
 
     await activityRepo.logEvent({
       sessionId,
-      actor: wasStoppedByUser ? 'user' : 'system',
-      category: 'pagination',
+      actor: wasStoppedByUser ? "user" : "system",
+      category: "pagination",
       message: this.autoPaginateState.message,
     });
   }
@@ -870,7 +997,7 @@ class CaptureController {
     }
 
     for (const raw of rawResponses) {
-      if (raw.parseStatus !== 'parsed') continue;
+      if (raw.parseStatus !== "parsed") continue;
       const parsedRes = parseApiJsonBody(raw.responseBody);
       if (!parsedRes.ok) continue;
       const parsed = parsedRes.data;
@@ -889,7 +1016,10 @@ class CaptureController {
       const items = extractItemsByPath(parsed, updatedSource.recordPath);
       if (!items || items.length === 0) continue;
 
-      const existingRecords = await recordRepo.getRecordsBySource(sessionId, updatedSource.id);
+      const existingRecords = await recordRepo.getRecordsBySource(
+        sessionId,
+        updatedSource.id,
+      );
       const consolidation = consolidateRecords({
         sessionId,
         sourceId: updatedSource.id,
@@ -900,7 +1030,10 @@ class CaptureController {
         policy: updatedSource.consolidationPolicy,
       });
 
-      await recordRepo.upsertRecords(consolidation.toInsert, consolidation.toUpdate);
+      await recordRepo.upsertRecords(
+        consolidation.toInsert,
+        consolidation.toUpdate,
+      );
 
       const existingSchema = await schemaRepo.getSchema(updatedSource.id);
       const updatedSchema = inferSchemaFromRecords({
@@ -916,8 +1049,8 @@ class CaptureController {
     const metrics = await calculateSessionMetrics(sessionId);
     await activityRepo.logEvent({
       sessionId,
-      actor: 'user',
-      category: 'extraction',
+      actor: "user",
+      category: "extraction",
       message: `Reprocessed ${rawResponses.length} stored responses → ${metrics.uniqueRecords} unique records`,
     });
   }

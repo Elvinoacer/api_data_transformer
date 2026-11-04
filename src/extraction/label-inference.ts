@@ -1,71 +1,71 @@
 const GENERIC_URL_SEGMENTS = new Set([
-  'api',
-  'apis',
-  'rest',
-  'graphql',
-  'gql',
-  'rpc',
-  'trpc',
-  'odata',
-  'public',
-  'private',
-  'internal',
-  'external',
-  'web',
-  'mobile',
-  'app',
-  'bff',
-  'gateway',
-  'proxy',
-  'service',
-  'services',
-  'data',
-  'json',
-  'list',
-  'index',
-  'search',
-  'query',
-  'filter',
-  'cursor',
-  'paginate',
-  'paginated',
-  'page',
-  'all',
-  'active',
-  'by-id',
-  'details',
-  'detail',
-  'info',
-  'get',
-  'fetch',
-  'load',
-  'read',
-  ':id',
-  ':uuid',
+  "api",
+  "apis",
+  "rest",
+  "graphql",
+  "gql",
+  "rpc",
+  "trpc",
+  "odata",
+  "public",
+  "private",
+  "internal",
+  "external",
+  "web",
+  "mobile",
+  "app",
+  "bff",
+  "gateway",
+  "proxy",
+  "service",
+  "services",
+  "data",
+  "json",
+  "list",
+  "index",
+  "search",
+  "query",
+  "filter",
+  "cursor",
+  "paginate",
+  "paginated",
+  "page",
+  "all",
+  "active",
+  "by-id",
+  "details",
+  "detail",
+  "info",
+  "get",
+  "fetch",
+  "load",
+  "read",
+  ":id",
+  ":uuid",
 ]);
 
 const GENERIC_PATH_KEYS = new Set([
-  'root',
-  'single_object',
-  'data',
-  'results',
-  'result',
-  'items',
-  'records',
-  'rows',
-  'list',
-  'entries',
-  'content',
-  'value',
-  'values',
-  'nodes',
-  'node',
-  'edges',
-  'documents',
-  'hits',
-  'response',
-  'payload',
-  'body',
+  "root",
+  "single_object",
+  "data",
+  "results",
+  "result",
+  "items",
+  "records",
+  "rows",
+  "list",
+  "entries",
+  "content",
+  "value",
+  "values",
+  "nodes",
+  "node",
+  "edges",
+  "documents",
+  "hits",
+  "response",
+  "payload",
+  "body",
 ]);
 
 /**
@@ -73,24 +73,28 @@ const GENERIC_PATH_KEYS = new Set([
  * Example: "patient_medicines" -> "Patient Medicines", "GetCustomersQuery" -> "Get Customers Query"
  */
 export function humanizeIdentifier(raw: string): string {
-  if (!raw) return '';
+  if (!raw) return "";
   const spaced = raw
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/[_\-./]+/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/[_\-./]+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
   return spaced
-    .split(' ')
+    .split(" ")
     .filter(Boolean)
     .map((word) => {
-      if (word.length <= 3 && word === word.toUpperCase() && /^[A-Z]+$/.test(word)) {
+      if (
+        word.length <= 3 &&
+        word === word.toUpperCase() &&
+        /^[A-Z]+$/.test(word)
+      ) {
         return word;
       }
       return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
     })
-    .join(' ');
+    .join(" ");
 }
 
 /**
@@ -101,29 +105,40 @@ export function slugifyLabel(label: string): string {
   const cleaned = label
     .trim()
     .toLowerCase()
-    .replace(/https?:\/\//g, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .replace(/_+/g, '_');
-  return cleaned.slice(0, 48) || 'dataset';
+    .replace(/https?:\/\//g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+  return cleaned.slice(0, 48) || "dataset";
 }
 
 function isDynamicOrVersionSegment(seg: string): boolean {
   const lower = seg.toLowerCase();
   if (/^v\d+(\.\d+)?$/.test(lower)) return true; // v1, v2, v1.2
   if (/^\d+$/.test(lower)) return true; // numeric ID
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lower)) return true; // UUID
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      lower,
+    )
+  )
+    return true; // UUID
   if (/^[0-9a-f]{24}$/i.test(lower)) return true; // Mongo ObjectId
-  if (lower.startsWith(':')) return true; // :id
+  if (lower.startsWith(":")) return true; // :id
   return false;
 }
 
 function cleanOperationName(opName: string): string {
   let cleaned = opName.trim();
   // Strip common GraphQL verb prefixes and suffixes
-  cleaned = cleaned.replace(/^(get|list|fetch|load|search|find|query|read)(?=[A-Z_])/i, '');
-  cleaned = cleaned.replace(/(Query|Mutation|List|Data|Payload|Response|Connection)$/i, '');
-  cleaned = cleaned.replace(/^_+|_+$/g, '');
+  cleaned = cleaned.replace(
+    /^(get|list|fetch|load|search|find|query|read)(?=[A-Z_])/i,
+    "",
+  );
+  cleaned = cleaned.replace(
+    /(Query|Mutation|List|Data|Payload|Response|Connection)$/i,
+    "",
+  );
+  cleaned = cleaned.replace(/^_+|_+$/g, "");
   return humanizeIdentifier(cleaned || opName);
 }
 
@@ -146,15 +161,21 @@ export function inferDatasetLabel(params: {
 
   // 2. Check URL path segments from right to left for a meaningful resource noun
   try {
-    const cleanUrl = url.split('#')[0];
-    const parsed = new URL(cleanUrl, 'http://localhost');
+    const cleanUrl = url.split("#")[0];
+    const parsed = new URL(cleanUrl, "http://localhost");
     const segments = parsed.pathname
-      .split('/')
-      .map((s) => decodeURIComponent(s).replace(/\.json$/i, '').trim())
+      .split("/")
+      .map((s) =>
+        decodeURIComponent(s)
+          .replace(/\.json$/i, "")
+          .trim(),
+      )
       .filter(Boolean);
 
     const meaningful = segments.filter(
-      (seg) => !GENERIC_URL_SEGMENTS.has(seg.toLowerCase()) && !isDynamicOrVersionSegment(seg)
+      (seg) =>
+        !GENERIC_URL_SEGMENTS.has(seg.toLowerCase()) &&
+        !isDynamicOrVersionSegment(seg),
     );
 
     if (meaningful.length > 0) {
@@ -165,7 +186,15 @@ export function inferDatasetLabel(params: {
     }
 
     // Check query param hints for RPC-style endpoints (e.g. ?action=get_medicines or ?entity=customers)
-    for (const key of ['resource', 'entity', 'collection', 'table', 'type', 'action', 'endpoint']) {
+    for (const key of [
+      "resource",
+      "entity",
+      "collection",
+      "table",
+      "type",
+      "action",
+      "endpoint",
+    ]) {
       const val = parsed.searchParams.get(key);
       if (val && !isDynamicOrVersionSegment(val)) {
         const cleaned = cleanOperationName(val);
@@ -179,10 +208,10 @@ export function inferDatasetLabel(params: {
   // 3. Check recordPath for domain-specific collection keys (e.g. "data.medicines" -> "Medicines")
   if (recordPath) {
     const cleanedPath = recordPath
-      .replace(/^values\((.*)\)$/, '$1')
-      .replace(/\[\]/g, '');
+      .replace(/^values\((.*)\)$/, "$1")
+      .replace(/\[\]/g, "");
     const parts = cleanedPath
-      .split('.')
+      .split(".")
       .map((p) => p.trim())
       .filter((p) => p && !GENERIC_PATH_KEYS.has(p.toLowerCase()));
     if (parts.length > 0) {
@@ -193,13 +222,13 @@ export function inferDatasetLabel(params: {
 
   // 4. Fallback to last URL path segment or host
   try {
-    const parsed = new URL(url.split('#')[0], 'http://localhost');
-    const lastSeg = parsed.pathname.split('/').filter(Boolean).pop();
+    const parsed = new URL(url.split("#")[0], "http://localhost");
+    const lastSeg = parsed.pathname.split("/").filter(Boolean).pop();
     if (lastSeg && !isDynamicOrVersionSegment(lastSeg)) {
       return humanizeIdentifier(lastSeg);
     }
-    return `${humanizeIdentifier(parsed.hostname.split('.')[0] || 'API')} Dataset`;
+    return `${humanizeIdentifier(parsed.hostname.split(".")[0] || "API")} Dataset`;
   } catch {
-    return 'API Dataset';
+    return "API Dataset";
   }
 }

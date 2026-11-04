@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useId } from 'react';
-import { ExtractedRecord, EndpointSource } from '../../shared/types';
+import React, { useState, useMemo, useId } from "react";
+import { ExtractedRecord, EndpointSource } from "../../shared/types";
 import {
   Database,
   Search,
@@ -9,13 +9,13 @@ import {
   SlidersHorizontal,
   Download,
   Tag,
-} from 'lucide-react';
+} from "lucide-react";
 import {
   collectUniqueColumns,
   flattenObject,
   formatColumnHeader,
-} from '../../extraction/flatten';
-import { JsonViewerModal } from '../components/JsonViewerModal';
+} from "../../extraction/flatten";
+import { JsonViewerModal } from "../components/JsonViewerModal";
 
 interface Props {
   records: ExtractedRecord[];
@@ -27,17 +27,20 @@ interface Props {
 export const Records: React.FC<Props> = ({
   records,
   sources,
-  initialSourceFilter = 'all',
+  initialSourceFilter = "all",
   onExportFiltered,
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedSourceId, setSelectedSourceId] = useState<string>(initialSourceFilter);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedSourceId, setSelectedSourceId] =
+    useState<string>(initialSourceFilter);
   const [readableMode, setReadableMode] = useState<boolean>(true);
   const [showColumnPicker, setShowColumnPicker] = useState<boolean>(false);
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const pageSize = 25;
-  const [inspectRecord, setInspectRecord] = useState<ExtractedRecord | null>(null);
+  const [inspectRecord, setInspectRecord] = useState<ExtractedRecord | null>(
+    null,
+  );
   const tableCaptionId = useId();
 
   React.useEffect(() => {
@@ -47,7 +50,7 @@ export const Records: React.FC<Props> = ({
 
   const sourceMap = useMemo(
     () => new Map(sources.map((s) => [s.id, s])),
-    [sources]
+    [sources],
   );
 
   const sourceCounts = useMemo(() => {
@@ -60,7 +63,7 @@ export const Records: React.FC<Props> = ({
 
   const filteredRecords = useMemo(() => {
     return records.filter((rec) => {
-      if (selectedSourceId !== 'all' && rec.sourceId !== selectedSourceId) {
+      if (selectedSourceId !== "all" && rec.sourceId !== selectedSourceId) {
         return false;
       }
       if (!searchTerm.trim()) return true;
@@ -68,12 +71,17 @@ export const Records: React.FC<Props> = ({
       const lower = searchTerm.toLowerCase();
       if (rec.identityKey.toLowerCase().includes(lower)) return true;
 
-      const srcLabel = sourceMap.get(rec.sourceId)?.label || '';
+      const srcLabel = sourceMap.get(rec.sourceId)?.label || "";
       if (srcLabel.toLowerCase().includes(lower)) return true;
 
       if (rec.normalizedFields) {
         for (const val of Object.values(rec.normalizedFields)) {
-          if (String(val ?? '').toLowerCase().includes(lower)) return true;
+          if (
+            String(val ?? "")
+              .toLowerCase()
+              .includes(lower)
+          )
+            return true;
         }
       }
       return false;
@@ -82,11 +90,18 @@ export const Records: React.FC<Props> = ({
 
   // Compute all discovered columns across filtered dataset
   const allColumns = useMemo(() => {
-    const sample = filteredRecords.slice(0, 150).map((r) =>
-      typeof r.rawRecord === 'object' && r.rawRecord !== null
-        ? flattenObject(r.rawRecord, '', {}, { arrayFormat: readableMode ? 'readable' : 'json' })
-        : r.normalizedFields || {}
-    );
+    const sample = filteredRecords
+      .slice(0, 150)
+      .map((r) =>
+        typeof r.rawRecord === "object" && r.rawRecord !== null
+          ? flattenObject(
+              r.rawRecord,
+              "",
+              {},
+              { arrayFormat: readableMode ? "readable" : "json" },
+            )
+          : r.normalizedFields || {},
+      );
     return collectUniqueColumns(sample);
   }, [filteredRecords, readableMode]);
 
@@ -111,24 +126,28 @@ export const Records: React.FC<Props> = ({
   }, [filteredRecords, page, pageSize]);
 
   const renderCellValue = (val: unknown) => {
-    if (val === undefined || val === null || val === '') {
+    if (val === undefined || val === null || val === "") {
       return <span className="text-stone-300">—</span>;
     }
-    if (typeof val === 'boolean') {
+    if (typeof val === "boolean") {
       return (
         <span
           className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
             val
-              ? 'bg-brand-100 text-brand-900 border border-brand-300'
-              : 'bg-stone-100 text-stone-600 border border-stone-200'
+              ? "bg-brand-100 text-brand-900 border border-brand-300"
+              : "bg-stone-100 text-stone-600 border border-stone-200"
           }`}
         >
-          {val ? 'True' : 'False'}
+          {val ? "True" : "False"}
         </span>
       );
     }
-    if (typeof val === 'number') {
-      return <span className="font-mono font-semibold text-obsidian-900 tabular-nums">{val}</span>;
+    if (typeof val === "number") {
+      return (
+        <span className="font-mono font-semibold text-obsidian-900 tabular-nums">
+          {val}
+        </span>
+      );
     }
     return <span>{String(val)}</span>;
   };
@@ -144,7 +163,8 @@ export const Records: React.FC<Props> = ({
               Extracted & Deduplicated Data ({filteredRecords.length})
             </h2>
             <p className="text-xs text-stone-600 mt-1">
-              Clean, normalized rows consolidated across all visited API pages. Switch between labeled datasets below.
+              Clean, normalized rows consolidated across all visited API pages.
+              Switch between labeled datasets below.
             </p>
           </div>
 
@@ -156,11 +176,11 @@ export const Records: React.FC<Props> = ({
               onClick={() => setReadableMode(!readableMode)}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
                 readableMode
-                  ? 'bg-brand-50 text-brand-950 border-brand-300'
-                  : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
+                  ? "bg-brand-50 text-brand-950 border-brand-300"
+                  : "bg-white text-stone-700 border-stone-200 hover:bg-stone-50"
               }`}
             >
-              {readableMode ? 'Clean Labels: On' : 'Raw Dot-Paths'}
+              {readableMode ? "Clean Labels: On" : "Raw Dot-Paths"}
             </button>
 
             {/* Column Picker Toggle */}
@@ -171,7 +191,10 @@ export const Records: React.FC<Props> = ({
                 onClick={() => setShowColumnPicker(!showColumnPicker)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-stone-50 border border-stone-200 rounded-xl text-xs font-semibold text-obsidian-900 transition"
               >
-                <SlidersHorizontal className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" />
+                <SlidersHorizontal
+                  className="w-3.5 h-3.5 text-brand-700"
+                  aria-hidden="true"
+                />
                 Columns ({visibleColumns.length}/{allColumns.length})
               </button>
             )}
@@ -194,15 +217,15 @@ export const Records: React.FC<Props> = ({
           <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
-              aria-pressed={selectedSourceId === 'all'}
+              aria-pressed={selectedSourceId === "all"}
               onClick={() => {
-                setSelectedSourceId('all');
+                setSelectedSourceId("all");
                 setPage(1);
               }}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border ${
-                selectedSourceId === 'all'
-                  ? 'bg-obsidian-900 text-brand-300 border-obsidian-900'
-                  : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100'
+                selectedSourceId === "all"
+                  ? "bg-obsidian-900 text-brand-300 border-obsidian-900"
+                  : "bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100"
               }`}
             >
               All Datasets ({records.length})
@@ -221,16 +244,18 @@ export const Records: React.FC<Props> = ({
                   }}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition border ${
                     active
-                      ? 'bg-obsidian-900 text-brand-300 border-obsidian-900'
-                      : 'bg-stone-50 text-obsidian-900 border-stone-200 hover:border-brand-400'
+                      ? "bg-obsidian-900 text-brand-300 border-obsidian-900"
+                      : "bg-stone-50 text-obsidian-900 border-stone-200 hover:border-brand-400"
                   }`}
                 >
                   <Tag
-                    className={`w-3 h-3 ${active ? 'text-brand-400' : 'text-brand-700'}`}
+                    className={`w-3 h-3 ${active ? "text-brand-400" : "text-brand-700"}`}
                     aria-hidden="true"
                   />
                   {src.label}
-                  <span className="opacity-75 font-mono text-[11px] tabular-nums">({cnt})</span>
+                  <span className="opacity-75 font-mono text-[11px] tabular-nums">
+                    ({cnt})
+                  </span>
                 </button>
               );
             })}
@@ -262,7 +287,9 @@ export const Records: React.FC<Props> = ({
         {showColumnPicker && allColumns.length > 0 && (
           <div className="p-3.5 bg-stone-50 rounded-xl border border-stone-200 space-y-2">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-obsidian-900">Visible Table Columns</span>
+              <span className="font-bold text-obsidian-900">
+                Visible Table Columns
+              </span>
               <button
                 type="button"
                 onClick={() => setHiddenColumns(new Set())}
@@ -284,7 +311,9 @@ export const Records: React.FC<Props> = ({
                       checked={checked}
                       onChange={() => toggleColumn(col)}
                     />
-                    <span className="font-mono text-[11px] text-obsidian-900">{col}</span>
+                    <span className="font-mono text-[11px] text-obsidian-900">
+                      {col}
+                    </span>
                   </label>
                 );
               })}
@@ -298,8 +327,8 @@ export const Records: React.FC<Props> = ({
         {filteredRecords.length === 0 ? (
           <div className="p-12 text-center text-stone-500 text-xs">
             {records.length === 0
-              ? 'No extracted records yet. Browse your target website tab to materialize API entities.'
-              : 'No records match your current search or dataset filter.'}
+              ? "No extracted records yet. Browse your target website tab to materialize API entities."
+              : "No records match your current search or dataset filter."}
           </div>
         ) : (
           <>
@@ -315,16 +344,19 @@ export const Records: React.FC<Props> = ({
                 </caption>
                 <thead className="bg-stone-100/95 backdrop-blur-xs text-[11px] font-bold uppercase text-stone-600 border-b border-stone-200">
                   <tr>
-                    <th scope="col" className="px-4 py-3 bg-stone-100 whitespace-nowrap">
+                    <th
+                      scope="col"
+                      className="px-4 py-3 bg-stone-100 whitespace-nowrap"
+                    >
                       Identity Key
                     </th>
-                    {selectedSourceId === 'all' && (
+                    {selectedSourceId === "all" && (
                       <th scope="col" className="px-4 py-3 whitespace-nowrap">
                         Dataset
                       </th>
                     )}
                     {visibleColumns
-                      .filter((c) => c !== 'id')
+                      .filter((c) => c !== "id")
                       .map((col) => (
                         <th
                           key={col}
@@ -332,13 +364,19 @@ export const Records: React.FC<Props> = ({
                           className="px-4 py-3 truncate max-w-[180px] whitespace-nowrap"
                           title={col}
                         >
-                          {formatColumnHeader(col, readableMode ? 'readable' : 'dot')}
+                          {formatColumnHeader(
+                            col,
+                            readableMode ? "readable" : "dot",
+                          )}
                         </th>
                       ))}
                     <th scope="col" className="px-4 py-3 whitespace-nowrap">
                       Rev
                     </th>
-                    <th scope="col" className="px-4 py-3 text-right whitespace-nowrap">
+                    <th
+                      scope="col"
+                      className="px-4 py-3 text-right whitespace-nowrap"
+                    >
                       Inspect
                     </th>
                   </tr>
@@ -346,22 +384,32 @@ export const Records: React.FC<Props> = ({
                 <tbody className="divide-y divide-stone-100">
                   {paginatedRecords.map((rec) => {
                     const rowData =
-                      typeof rec.rawRecord === 'object' && rec.rawRecord !== null
-                        ? flattenObject(rec.rawRecord, '', {}, {
-                            arrayFormat: readableMode ? 'readable' : 'json',
-                          })
+                      typeof rec.rawRecord === "object" &&
+                      rec.rawRecord !== null
+                        ? flattenObject(
+                            rec.rawRecord,
+                            "",
+                            {},
+                            {
+                              arrayFormat: readableMode ? "readable" : "json",
+                            },
+                          )
                         : rec.normalizedFields || {};
-                    const srcLabel = sourceMap.get(rec.sourceId)?.label || 'API';
+                    const srcLabel =
+                      sourceMap.get(rec.sourceId)?.label || "API";
 
                     return (
-                      <tr key={rec.id} className="hover:bg-brand-50/35 transition">
+                      <tr
+                        key={rec.id}
+                        className="hover:bg-brand-50/35 transition"
+                      >
                         <th
                           scope="row"
                           className="px-4 py-3 font-mono font-bold text-brand-900 bg-white whitespace-nowrap border-r border-stone-100"
                         >
                           {rec.identityKey}
                         </th>
-                        {selectedSourceId === 'all' && (
+                        {selectedSourceId === "all" && (
                           <td className="px-4 py-3 whitespace-nowrap">
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-brand-100 text-brand-950 border border-brand-300">
                               {srcLabel}
@@ -369,14 +417,18 @@ export const Records: React.FC<Props> = ({
                           </td>
                         )}
                         {visibleColumns
-                          .filter((c) => c !== 'id')
+                          .filter((c) => c !== "id")
                           .map((col) => {
                             const val = rowData[col];
                             return (
                               <td
                                 key={col}
                                 className="px-4 py-3 max-w-[220px] truncate text-stone-800"
-                                title={val !== undefined && val !== null ? String(val) : ''}
+                                title={
+                                  val !== undefined && val !== null
+                                    ? String(val)
+                                    : ""
+                                }
                               >
                                 {renderCellValue(val)}
                               </td>
@@ -394,7 +446,11 @@ export const Records: React.FC<Props> = ({
                             aria-label={`Inspect JSON for ${rec.identityKey}`}
                             className="inline-flex items-center gap-1 px-2.5 py-1 bg-stone-100 hover:bg-brand-100 text-obsidian-900 text-xs font-semibold rounded-lg transition"
                           >
-                            <Eye className="w-3.5 h-3.5 text-brand-700" aria-hidden="true" /> JSON
+                            <Eye
+                              className="w-3.5 h-3.5 text-brand-700"
+                              aria-hidden="true"
+                            />{" "}
+                            JSON
                           </button>
                         </td>
                       </tr>
@@ -407,9 +463,15 @@ export const Records: React.FC<Props> = ({
             {/* Pagination Footer */}
             <div className="px-6 py-3.5 border-t border-stone-200 bg-stone-50/70 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-stone-600">
               <span className="tabular-nums">
-                Showing <strong>{Math.min((page - 1) * pageSize + 1, filteredRecords.length)}</strong>–
-                <strong>{Math.min(page * pageSize, filteredRecords.length)}</strong> of{' '}
-                <strong>{filteredRecords.length}</strong> unique records
+                Showing{" "}
+                <strong>
+                  {Math.min((page - 1) * pageSize + 1, filteredRecords.length)}
+                </strong>
+                –
+                <strong>
+                  {Math.min(page * pageSize, filteredRecords.length)}
+                </strong>{" "}
+                of <strong>{filteredRecords.length}</strong> unique records
               </span>
 
               <div className="flex items-center gap-2">
@@ -446,10 +508,11 @@ export const Records: React.FC<Props> = ({
           isOpen={Boolean(inspectRecord)}
           onClose={() => setInspectRecord(null)}
           title={`${
-            sourceMap.get(inspectRecord.sourceId)?.label || 'Entity'
+            sourceMap.get(inspectRecord.sourceId)?.label || "Entity"
           } — Key: ${inspectRecord.identityKey} (v${inspectRecord.version})`}
           data={{
-            datasetLabel: sourceMap.get(inspectRecord.sourceId)?.label || 'API Dataset',
+            datasetLabel:
+              sourceMap.get(inspectRecord.sourceId)?.label || "API Dataset",
             provenance: {
               recordId: inspectRecord.id,
               sourceId: inspectRecord.sourceId,

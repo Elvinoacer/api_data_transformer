@@ -4,7 +4,7 @@
  * Prepends an inert character (') if the text could be interpreted as a formula.
  */
 export function sanitizeForFormulaInjection(value: string): string {
-  if (!value || typeof value !== 'string') {
+  if (!value || typeof value !== "string") {
     return value;
   }
 
@@ -13,7 +13,7 @@ export function sanitizeForFormulaInjection(value: string): string {
   if (trimmed.length === 0) return value;
 
   const firstChar = trimmed[0];
-  const dangerousChars = ['=', '+', '-', '@', '\t', '\r'];
+  const dangerousChars = ["=", "+", "-", "@", "\t", "\r"];
 
   if (dangerousChars.includes(firstChar)) {
     // Prefix with single quote to force spreadsheet to treat as plain string
