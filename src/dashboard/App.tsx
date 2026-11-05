@@ -9,6 +9,7 @@ import { Exports } from "./pages/Exports";
 import { Settings } from "./pages/Settings";
 import { TabPickerModal } from "./components/TabPickerModal";
 import { PaginationAssistantModal } from "./components/PaginationAssistantModal";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ToastProvider, useToast } from "./components/ToastProvider";
 import {
   activityRepo,
@@ -36,6 +37,8 @@ import {
 } from "../shared/types";
 import {
   CaptureStateResponse,
+  ClearTabDataPayload,
+  ClearTabDataResult,
   sendExtensionMessage,
 } from "../messaging/protocol";
 import { generateFlattenedCsv } from "../export/csv";
@@ -85,6 +88,9 @@ const DashboardWorkspace: React.FC = () => {
 
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const [isReprocessing, setIsReprocessing] = useState(false);
+  const [isClearTabDataConfirmOpen, setIsClearTabDataConfirmOpen] =
+    useState(false);
+  const [isClearingTabData, setIsClearingTabData] = useState(false);
 
   // Refs for detecting live system transitions without spamming initial load
   const initializedSessionRef = useRef<string | null>(null);
@@ -204,6 +210,9 @@ const DashboardWorkspace: React.FC = () => {
           ]);
 
           // Detect newly discovered API datasets during live capture
+          if (fetchedSources.length === 0) {
+            knownSourceIdsRef.current.clear();
+          }
           if (initializedSessionRef.current !== currentSession.id) {
             initializedSessionRef.current = currentSession.id;
             knownSourceIdsRef.current = new Set(
@@ -412,6 +421,45 @@ const DashboardWorkspace: React.FC = () => {
     }
   };
 
+  const handleConfirmClearTabData = async () => {
+    if (!session) return;
+    setIsClearingTabData(true);
+    try {
+      const res = await sendExtensionMessage<
+        ClearTabDataPayload,
+        ClearTabDataResult
+      >("CLEAR_TAB_DATA", { sessionId: session.id });
+      if (!res.success) {
+        await sessionRepo.clearSessionData(session.id);
+      }
+      setRecordsSourceFilter("all");
+      setExportsSourceFilter(undefined);
+      setAutoPaginateSourceId(undefined);
+      await refreshData({ silent: false, forceSessionId: session.id });
+      const countText =
+        res.data &&
+        (res.data.clearedResponses > 0 || res.data.clearedRecords > 0)
+          ? `Purged ${res.data.clearedResponses} response(s), ${res.data.clearedRecords} record(s), and ${res.data.clearedSources} dataset(s).`
+          : `Purged all raw traffic, records, and schemas for "${session.label}".`;
+      notify({
+        title: "Tab Data Cleared",
+        description: `${countText} Session remains active.`,
+        variant: "info",
+        actor: "user",
+      });
+      setIsClearTabDataConfirmOpen(false);
+    } catch (err: any) {
+      notify({
+        title: "Could Not Clear Tab Data",
+        description: err?.message || "Error clearing tab data",
+        variant: "error",
+        actor: "system",
+      });
+    } finally {
+      setIsClearingTabData(false);
+    }
+  };
+
   const handleFocusTargetTab = async () => {
     const res = await sendExtensionMessage("FOCUS_TARGET_TAB");
     if (!res.success) {
@@ -582,6 +630,7 @@ const DashboardWorkspace: React.FC = () => {
         onPause={handlePause}
         onResume={handleResume}
         onStop={handleStop}
+        onClearTabData={() => setIsClearTabDataConfirmOpen(true)}
         onOpenAutoPaginate={() => handleOpenAutoPaginate()}
         onFocusTargetTab={handleFocusTargetTab}
         onRefresh={handleManualRefresh}
@@ -607,6 +656,7 @@ const DashboardWorkspace: React.FC = () => {
             onNavigateTab={handleNavigateTab}
             onOpenAutoPaginate={handleOpenAutoPaginate}
             onQuickExportSource={handleQuickExportSource}
+            onClearTabData={() => setIsClearTabDataConfirmOpen(true)}
           />
         )}
 
@@ -625,7 +675,11 @@ const DashboardWorkspace: React.FC = () => {
         )}
 
         {currentTab === "responses" && (
-          <Responses responses={responses} sources={sources} />
+          <Responses
+            responses={responses}
+            sources={sources}
+            onClearTabData={() => setIsClearTabDataConfirmOpen(true)}
+          />
         )}
 
         {currentTab === "records" && (
@@ -636,6 +690,7 @@ const DashboardWorkspace: React.FC = () => {
             onExportFiltered={(srcId) =>
               handleNavigateTab("exports", srcId === "all" ? undefined : srcId)
             }
+            onClearTabData={() => setIsClearTabDataConfirmOpen(true)}
           />
         )}
 
@@ -661,6 +716,17 @@ const DashboardWorkspace: React.FC = () => {
               setSelectedSessionId(null);
               await refreshData({ silent: false, forceSessionId: null });
             }}
+            onDataCleared={async () => {
+              if (session) {
+                setRecordsSourceFilter("all");
+                setExportsSourceFilter(undefined);
+                setAutoPaginateSourceId(undefined);
+                await refreshData({
+                  silent: false,
+                  forceSessionId: session.id,
+                });
+              }
+            }}
           />
         )}
       </main>
@@ -683,6 +749,19 @@ const DashboardWorkspace: React.FC = () => {
         autoPaginateState={autoPaginateState}
         onStartAutoPaginate={handleStartAutoPaginate}
         onStopAutoPaginate={handleStopAutoPaginate}
+      />
+
+      {/* Clear Tab Data Confirmation Modal */}
+      <ConfirmDialog
+        isOpen={isClearTabDataConfirmOpen}
+        title="Clear All Tab Data?"
+        description={`This will permanently wipe all captured raw responses, extracted records, inferred schemas, endpoint sources, and sync queue items for "${session?.label || "this tab"}". The session remains connected so you can capture fresh data immediately.`}
+        confirmLabel="Clear All Tab Data"
+        cancelLabel="Keep Data"
+        variant="warning"
+        isBusy={isClearingTabData}
+        onCancel={() => setIsClearTabDataConfirmOpen(false)}
+        onConfirm={handleConfirmClearTabData}
       />
     </div>
   );

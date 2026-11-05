@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { StatusBadge } from "../dashboard/components/StatusBadge";
 import { TabPickerModal } from "../dashboard/components/TabPickerModal";
+import { ConfirmDialog } from "../dashboard/components/ConfirmDialog";
 import { ToastProvider, useToast } from "../dashboard/components/ToastProvider";
 import {
   activityRepo,
@@ -23,6 +24,8 @@ import {
 } from "../shared/types";
 import {
   CaptureStateResponse,
+  ClearTabDataPayload,
+  ClearTabDataResult,
   sendExtensionMessage,
 } from "../messaging/protocol";
 import { generateFlattenedCsv } from "../export/csv";
@@ -40,6 +43,7 @@ import {
   Download,
   Tag,
   Loader2,
+  Eraser,
 } from "lucide-react";
 
 const SidePanelWorkspace: React.FC = () => {
@@ -64,6 +68,8 @@ const SidePanelWorkspace: React.FC = () => {
   });
   const [isTabPickerOpen, setIsTabPickerOpen] = useState(false);
   const [walkMode, setWalkMode] = useState<AutoPaginateMode>("dom_click");
+  const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -227,6 +233,42 @@ const SidePanelWorkspace: React.FC = () => {
   const handleStopPaginate = async () => {
     await sendExtensionMessage("STOP_AUTO_PAGINATE");
     await refresh();
+  };
+
+  const handleClearTabData = async () => {
+    if (!session) return;
+    setIsClearing(true);
+    try {
+      const res = await sendExtensionMessage<
+        ClearTabDataPayload,
+        ClearTabDataResult
+      >("CLEAR_TAB_DATA", { sessionId: session.id });
+      if (!res.success) {
+        await sessionRepo.clearSessionData(session.id);
+      }
+      await refresh();
+      const countText =
+        res.data &&
+        (res.data.clearedResponses > 0 || res.data.clearedRecords > 0)
+          ? `Purged ${res.data.clearedResponses} response(s) and ${res.data.clearedRecords} record(s).`
+          : `Wiped all captured responses, records, and schemas.`;
+      notify({
+        title: "Tab Data Cleared",
+        description: `${countText} Session "${session.label}" remains active.`,
+        variant: "info",
+        actor: "user",
+      });
+      setIsClearConfirmOpen(false);
+    } catch (err: any) {
+      notify({
+        title: "Could Not Clear Data",
+        description: err?.message || "Failed to clear tab data",
+        variant: "error",
+        actor: "system",
+      });
+    } finally {
+      setIsClearing(false);
+    }
   };
 
   const handleQuickExportSource = async (src: EndpointSource) => {
@@ -397,6 +439,28 @@ const SidePanelWorkspace: React.FC = () => {
               </button>
             )}
           </div>
+
+          {session &&
+            (metrics.responsesObserved > 0 ||
+              metrics.uniqueRecords > 0 ||
+              metrics.endpointGroups > 0 ||
+              metrics.captureErrors > 0 ||
+              records.length > 0 ||
+              sources.length > 0 ||
+              recentResponses.length > 0) && (
+              <button
+                type="button"
+                onClick={() => setIsClearConfirmOpen(true)}
+                title="Clear all fetched/extracted data for this tab"
+                className="w-full py-1.5 px-3 bg-stone-50 hover:bg-amber-50 text-stone-700 hover:text-amber-900 border border-stone-200 hover:border-amber-300 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition"
+              >
+                <Eraser
+                  className="w-3.5 h-3.5 text-amber-600"
+                  aria-hidden="true"
+                />
+                Clear Tab Data
+              </button>
+            )}
         </section>
 
         {/* Quick Multi-Page Fetch Assistant Bar */}
@@ -590,9 +654,21 @@ const SidePanelWorkspace: React.FC = () => {
               />{" "}
               Recent API Traffic
             </span>
-            <span className="text-[10px] text-stone-400 font-mono">
-              {recentResponses.length}
-            </span>
+            <div className="flex items-center gap-2">
+              {recentResponses.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setIsClearConfirmOpen(true)}
+                  title="Clear all captured data from this tab"
+                  className="text-[10px] font-semibold text-stone-400 hover:text-amber-700 transition"
+                >
+                  Clear
+                </button>
+              )}
+              <span className="text-[10px] text-stone-400 font-mono">
+                {recentResponses.length}
+              </span>
+            </div>
           </div>
 
           <div className="space-y-1.5 flex-1 overflow-y-auto">
@@ -633,6 +709,18 @@ const SidePanelWorkspace: React.FC = () => {
         isOpen={isTabPickerOpen}
         onClose={() => setIsTabPickerOpen(false)}
         onSelectTab={handleStart}
+      />
+
+      <ConfirmDialog
+        isOpen={isClearConfirmOpen}
+        title="Clear All Tab Data?"
+        description={`This will permanently wipe all captured raw responses, extracted records, and schemas for "${session?.label || "this tab"}". The session remains connected so you can capture fresh data immediately.`}
+        confirmLabel="Clear All Tab Data"
+        cancelLabel="Keep Data"
+        variant="warning"
+        isBusy={isClearing}
+        onCancel={() => setIsClearConfirmOpen(false)}
+        onConfirm={handleClearTabData}
       />
     </div>
   );

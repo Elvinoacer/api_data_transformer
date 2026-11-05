@@ -8,15 +8,21 @@ import {
   AlertOctagon,
   Ban,
   Clock,
+  Eraser,
 } from "lucide-react";
 import { JsonViewerModal } from "../components/JsonViewerModal";
 
 interface Props {
   responses: RawResponse[];
   sources: EndpointSource[];
+  onClearTabData?: () => void;
 }
 
-export const Responses: React.FC<Props> = ({ responses, sources }) => {
+export const Responses: React.FC<Props> = ({
+  responses,
+  sources,
+  onClearTabData,
+}) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedResponse, setSelectedResponse] = useState<RawResponse | null>(
     null,
@@ -106,22 +112,36 @@ export const Responses: React.FC<Props> = ({ responses, sources }) => {
           </p>
         </div>
 
-        <div className="relative w-full md:w-72">
-          <Search
-            className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2"
-            aria-hidden="true"
-          />
-          <label htmlFor="responses-search" className="visually-hidden">
-            Search raw responses
-          </label>
-          <input
-            id="responses-search"
-            type="text"
-            placeholder="Filter by dataset label or URL..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs focus:bg-white text-obsidian-900"
-          />
+        <div className="flex items-center gap-2 w-full md:w-auto">
+          {responses.length > 0 && onClearTabData && (
+            <button
+              type="button"
+              onClick={onClearTabData}
+              title="Clear all captured API traffic for this tab"
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-stone-50 hover:bg-amber-50 text-stone-700 hover:text-amber-900 border border-stone-200 hover:border-amber-300 rounded-xl text-xs font-semibold shadow-xs transition whitespace-nowrap"
+            >
+              <Eraser className="w-3.5 h-3.5 text-amber-600" aria-hidden="true" />
+              Clear Tab Data
+            </button>
+          )}
+
+          <div className="relative flex-1 md:w-72">
+            <Search
+              className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2"
+              aria-hidden="true"
+            />
+            <label htmlFor="responses-search" className="visually-hidden">
+              Search raw responses
+            </label>
+            <input
+              id="responses-search"
+              type="text"
+              placeholder="Filter by dataset label or URL..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs focus:bg-white text-obsidian-900"
+            />
+          </div>
         </div>
       </div>
 

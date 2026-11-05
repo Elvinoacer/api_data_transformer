@@ -184,6 +184,31 @@ chrome.runtime.onMessage.addListener(
             break;
           }
 
+          case "CLEAR_TAB_DATA": {
+            const payload =
+              (message.payload as {
+                sessionId?: string;
+                clearSyncQueue?: boolean;
+              }) || {};
+            const result = await captureController.clearTabData(
+              payload.sessionId,
+              payload.clearSyncQueue,
+            );
+            sendResponse({ success: true, data: result });
+            break;
+          }
+
+          case "CLEAR_ALL_DATA": {
+            const payload =
+              (message.payload as {
+                clearSessions?: boolean;
+                clearSyncQueue?: boolean;
+              }) || {};
+            const result = await captureController.clearAllData(payload);
+            sendResponse({ success: true, data: result });
+            break;
+          }
+
           case "SPHERE_GET_CONFIG": {
             const config = await SphereSyncClient.getConfig();
             sendResponse({ success: true, data: config });

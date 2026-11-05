@@ -160,6 +160,135 @@ export const sessionRepo = {
   async clearSessionRecords(sessionId: string): Promise<void> {
     await db.extracted_records.where("sessionId").equals(sessionId).delete();
   },
+
+  async clearSessionData(
+    sessionId: string,
+    options?: { clearSyncQueue?: boolean },
+  ): Promise<{
+    clearedResponses: number;
+    clearedRecords: number;
+    clearedSources: number;
+    clearedSchemas: number;
+    clearedErrors: number;
+  }> {
+    const clearSyncQueue = options?.clearSyncQueue ?? true;
+
+    let clearedResponses = 0;
+    let clearedRecords = 0;
+    let clearedSources = 0;
+    let clearedSchemas = 0;
+    let clearedErrors = 0;
+
+    await db.transaction(
+      "rw",
+      [
+        db.raw_responses,
+        db.extracted_records,
+        db.sources,
+        db.capture_errors,
+        db.schemas,
+        db.activity_events,
+        db.capture_sessions,
+        db.sync_queue,
+      ],
+      async () => {
+        clearedResponses = await db.raw_responses
+          .where("sessionId")
+          .equals(sessionId)
+          .delete();
+        clearedRecords = await db.extracted_records
+          .where("sessionId")
+          .equals(sessionId)
+          .delete();
+        clearedSources = await db.sources
+          .where("sessionId")
+          .equals(sessionId)
+          .delete();
+        clearedSchemas = await db.schemas
+          .where("sessionId")
+          .equals(sessionId)
+          .delete();
+        clearedErrors = await db.capture_errors
+          .where("sessionId")
+          .equals(sessionId)
+          .delete();
+        await db.activity_events.where("sessionId").equals(sessionId).delete();
+
+        await db.capture_sessions.update(sessionId, {
+          lastResponseAt: undefined,
+        });
+
+        if (clearSyncQueue) {
+          await db.sync_queue.clear();
+        }
+      },
+    );
+
+    const targetSession = await db.capture_sessions.get(sessionId);
+    if (targetSession) {
+      await activityRepo.logEvent({
+        sessionId,
+        actor: "user",
+        category: "session",
+        message:
+          "Cleared all captured data for this tab (raw traffic, records, schemas, and sources)",
+        detail: `Purged ${clearedResponses} response(s), ${clearedRecords} record(s), ${clearedSources} source(s)`,
+      });
+    }
+
+    return {
+      clearedResponses,
+      clearedRecords,
+      clearedSources,
+      clearedSchemas,
+      clearedErrors,
+    };
+  },
+
+  async clearAllCapturedData(options?: {
+    clearSessions?: boolean;
+    clearSyncQueue?: boolean;
+  }): Promise<void> {
+    const clearSessions = options?.clearSessions ?? false;
+    const clearSyncQueue = options?.clearSyncQueue ?? true;
+
+    await db.transaction(
+      "rw",
+      [
+        db.raw_responses,
+        db.extracted_records,
+        db.sources,
+        db.capture_errors,
+        db.schemas,
+        db.activity_events,
+        db.capture_sessions,
+        db.sync_queue,
+      ],
+      async () => {
+        await db.raw_responses.clear();
+        await db.extracted_records.clear();
+        await db.sources.clear();
+        await db.schemas.clear();
+        await db.capture_errors.clear();
+        await db.activity_events.clear();
+
+        if (clearSyncQueue) {
+          await db.sync_queue.clear();
+        }
+
+        if (clearSessions) {
+          await db.capture_sessions.clear();
+        } else {
+          const sessions = await db.capture_sessions.toArray();
+          for (const s of sessions) {
+            await db.capture_sessions.update(s.id, {
+              lastResponseAt: undefined,
+            });
+          }
+        }
+      },
+    );
+  },
 };
 
 export const rawResponseRepo = {

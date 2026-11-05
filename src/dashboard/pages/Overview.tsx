@@ -26,6 +26,7 @@ import {
   ArrowRight,
   Cpu,
   User,
+  Eraser,
 } from "lucide-react";
 import { DashboardTab } from "../components/Header";
 
@@ -41,6 +42,7 @@ interface Props {
   onNavigateTab: (tab: DashboardTab, sourceId?: string) => void;
   onOpenAutoPaginate: (sourceId?: string) => void;
   onQuickExportSource: (source: EndpointSource) => void;
+  onClearTabData?: () => void;
 }
 
 export const Overview: React.FC<Props> = ({
@@ -55,6 +57,7 @@ export const Overview: React.FC<Props> = ({
   onNavigateTab,
   onOpenAutoPaginate,
   onQuickExportSource,
+  onClearTabData,
 }) => {
   const [isEditingSessionLabel, setIsEditingSessionLabel] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
@@ -257,14 +260,35 @@ export const Overview: React.FC<Props> = ({
             session.status === "stopped" ||
             session.status === "detached" ||
             session.status === "error" ? (
-              <button
-                type="button"
-                onClick={onStartClick}
-                className="btn-lime inline-flex items-center gap-2 px-5 py-2.5 bg-brand-400 hover:bg-brand-300 text-obsidian-950 text-xs sm:text-sm font-extrabold rounded-xl shadow-lime-glow transition"
-              >
-                <Sparkles className="w-4 h-4" aria-hidden="true" />
-                Select Tab & Start Capture
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={onStartClick}
+                  className="btn-lime inline-flex items-center gap-2 px-5 py-2.5 bg-brand-400 hover:bg-brand-300 text-obsidian-950 text-xs sm:text-sm font-extrabold rounded-xl shadow-lime-glow transition"
+                >
+                  <Sparkles className="w-4 h-4" aria-hidden="true" />
+                  Select Tab & Start Capture
+                </button>
+                {session &&
+                  (metrics.responsesObserved > 0 ||
+                    metrics.uniqueRecords > 0 ||
+                    metrics.endpointGroups > 0 ||
+                    metrics.captureErrors > 0) &&
+                  onClearTabData && (
+                    <button
+                      type="button"
+                      onClick={onClearTabData}
+                      title="Clear all fetched/extracted data for this tab"
+                      className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-obsidian-800 hover:bg-amber-950/60 text-amber-300 hover:text-amber-200 border border-amber-500/40 text-xs font-bold rounded-xl transition shadow-xs"
+                    >
+                      <Eraser
+                        className="w-4 h-4 text-amber-400"
+                        aria-hidden="true"
+                      />
+                      Clear Tab Data
+                    </button>
+                  )}
+              </>
             ) : (
               <>
                 <button
@@ -286,6 +310,25 @@ export const Overview: React.FC<Props> = ({
                   />
                   Export Labeled CSV
                 </button>
+                {session &&
+                  (metrics.responsesObserved > 0 ||
+                    metrics.uniqueRecords > 0 ||
+                    metrics.endpointGroups > 0 ||
+                    metrics.captureErrors > 0) &&
+                  onClearTabData && (
+                    <button
+                      type="button"
+                      onClick={onClearTabData}
+                      title="Clear all captured data for this tab"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2.5 bg-obsidian-800 hover:bg-amber-950/60 text-amber-300 hover:text-amber-200 border border-amber-500/40 text-xs font-bold rounded-xl transition shadow-xs"
+                    >
+                      <Eraser
+                        className="w-4 h-4 text-amber-400"
+                        aria-hidden="true"
+                      />
+                      Clear Tab Data
+                    </button>
+                  )}
               </>
             )}
           </div>
@@ -336,14 +379,29 @@ export const Overview: React.FC<Props> = ({
             </p>
           </div>
           {sources.length > 0 && (
-            <button
-              type="button"
-              onClick={() => onNavigateTab("sources")}
-              className="inline-flex items-center gap-1 text-xs font-bold text-brand-800 hover:text-brand-950 transition"
-            >
-              Configure all datasets{" "}
-              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
+            <div className="flex items-center gap-3">
+              {onClearTabData && (
+                <button
+                  type="button"
+                  onClick={onClearTabData}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-stone-500 hover:text-amber-700 transition"
+                >
+                  <Eraser
+                    className="w-3.5 h-3.5 text-amber-600"
+                    aria-hidden="true"
+                  />
+                  Reset Tab Data
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onNavigateTab("sources")}
+                className="inline-flex items-center gap-1 text-xs font-bold text-brand-800 hover:text-brand-950 transition"
+              >
+                Configure all datasets{" "}
+                <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
           )}
         </div>
 

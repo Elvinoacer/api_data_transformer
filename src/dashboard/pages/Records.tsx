@@ -9,6 +9,7 @@ import {
   SlidersHorizontal,
   Download,
   Tag,
+  Eraser,
 } from "lucide-react";
 import {
   collectUniqueColumns,
@@ -22,6 +23,7 @@ interface Props {
   sources: EndpointSource[];
   initialSourceFilter?: string;
   onExportFiltered: (sourceId: string) => void;
+  onClearTabData?: () => void;
 }
 
 export const Records: React.FC<Props> = ({
@@ -29,6 +31,7 @@ export const Records: React.FC<Props> = ({
   sources,
   initialSourceFilter = "all",
   onExportFiltered,
+  onClearTabData,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedSourceId, setSelectedSourceId] =
@@ -209,6 +212,18 @@ export const Records: React.FC<Props> = ({
               <Download className="w-3.5 h-3.5" aria-hidden="true" />
               Export View
             </button>
+
+            {records.length > 0 && onClearTabData && (
+              <button
+                type="button"
+                onClick={onClearTabData}
+                title="Clear all extracted records and captured data for this tab"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-stone-700 hover:text-amber-900 border border-stone-200 hover:border-amber-300 rounded-xl text-xs font-semibold shadow-xs transition"
+              >
+                <Eraser className="w-3.5 h-3.5 text-amber-600" aria-hidden="true" />
+                Clear Tab Data
+              </button>
+            )}
           </div>
         </div>
 

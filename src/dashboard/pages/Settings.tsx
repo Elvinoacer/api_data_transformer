@@ -21,26 +21,43 @@ import {
   EyeOff,
   Radio,
   Sparkles,
+  Eraser,
 } from "lucide-react";
 import { DEFAULT_SETTINGS } from "../../shared/constants";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { SphereSyncClient, SyncConfig } from "../../sync/sphere-client";
-import { sendExtensionMessage } from "../../messaging/protocol";
+import {
+  ClearAllDataPayload,
+  ClearTabDataPayload,
+  ClearTabDataResult,
+  sendExtensionMessage,
+} from "../../messaging/protocol";
 
 interface Props {
   session: CaptureSession | null;
   onSessionCleared: () => Promise<void> | void;
+  onDataCleared?: () => Promise<void> | void;
 }
 
-export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
+export const Settings: React.FC<Props> = ({
+  session,
+  onSessionCleared,
+  onDataCleared,
+}) => {
   const { notify } = useToast();
   const [settings, setSettings] = useState<GlobalSettings>(DEFAULT_SETTINGS);
   const [newParam, setNewParam] = useState("");
   const [clearing, setClearing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<
-    "clear_records" | "delete_session" | "clear_sync_queue" | null
+    | "clear_tab_data"
+    | "clear_records"
+    | "delete_session"
+    | "clear_sync_queue"
+    | "clear_all_captured"
+    | "clear_all_global"
+    | null
   >(null);
 
   // Sphere Pharmacy Sync State
@@ -298,7 +315,108 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
       return;
     }
 
+    if (confirmAction === "clear_all_captured") {
+      setClearing(true);
+      try {
+        const res = await sendExtensionMessage<ClearAllDataPayload>(
+          "CLEAR_ALL_DATA",
+          {
+            clearSessions: false,
+            clearSyncQueue: true,
+          },
+        );
+        if (!res.success) {
+          await sessionRepo.clearAllCapturedData({
+            clearSessions: false,
+            clearSyncQueue: true,
+          });
+        }
+        notify({
+          title: "All Captured Data Reset",
+          description:
+            "Purged all raw traffic, extracted records, schemas, and queues across all tabs. Sessions remain active.",
+          variant: "warning",
+          actor: "user",
+        });
+        if (onDataCleared) {
+          await onDataCleared();
+        } else {
+          await onSessionCleared();
+        }
+      } finally {
+        setClearing(false);
+        setConfirmAction(null);
+      }
+      return;
+    }
+
+    if (confirmAction === "clear_all_global") {
+      setDeleting(true);
+      try {
+        const res = await sendExtensionMessage<ClearAllDataPayload>(
+          "CLEAR_ALL_DATA",
+          {
+            clearSessions: true,
+            clearSyncQueue: true,
+          },
+        );
+        if (!res.success) {
+          await sessionRepo.clearAllCapturedData({
+            clearSessions: true,
+            clearSyncQueue: true,
+          });
+        }
+        notify({
+          title: "All Extension Storage Cleared",
+          description:
+            "Permanently wiped all sessions, raw responses, extracted records, schemas, and queues.",
+          variant: "warning",
+          actor: "user",
+        });
+        await onSessionCleared();
+      } finally {
+        setDeleting(false);
+        setConfirmAction(null);
+      }
+      return;
+    }
+
     if (!session || !confirmAction) return;
+
+    if (confirmAction === "clear_tab_data") {
+      setClearing(true);
+      try {
+        const res = await sendExtensionMessage<
+          ClearTabDataPayload,
+          ClearTabDataResult
+        >("CLEAR_TAB_DATA", {
+          sessionId: session.id,
+        });
+        if (!res.success) {
+          await sessionRepo.clearSessionData(session.id);
+        }
+        const countText =
+          res.data &&
+          (res.data.clearedResponses > 0 || res.data.clearedRecords > 0)
+            ? `Purged ${res.data.clearedResponses} response(s), ${res.data.clearedRecords} record(s), and ${res.data.clearedSources} dataset(s).`
+            : `Purged all raw traffic, records, and schemas for "${session.label}".`;
+        notify({
+          title: "Tab Data Cleared",
+          description: `${countText} Session remains active.`,
+          variant: "success",
+          actor: "user",
+        });
+        if (onDataCleared) {
+          await onDataCleared();
+        } else {
+          await onSessionCleared();
+        }
+      } finally {
+        setClearing(false);
+        setConfirmAction(null);
+      }
+      return;
+    }
 
     if (confirmAction === "clear_records") {
       setClearing(true);
@@ -317,7 +435,11 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
           variant: "info",
           actor: "user",
         });
-        await onSessionCleared();
+        if (onDataCleared) {
+          await onDataCleared();
+        } else {
+          await onSessionCleared();
+        }
       } finally {
         setClearing(false);
         setConfirmAction(null);
@@ -435,7 +557,8 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
             />
             <p className="text-[11px] text-stone-500 mt-1">
               The Next.js API route receiving normalized POS medication catalogs
-              and stock deltas. Supports custom domains, Vercel previews, or local self-hosted instances.
+              and stock deltas. Supports custom domains, Vercel previews, or
+              local self-hosted instances.
             </p>
           </div>
 
@@ -848,7 +971,7 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
       </div>
 
       {/* Danger Zone */}
-      <div className="bg-white rounded-2xl shadow-xs border border-rose-200 p-6 space-y-4">
+      <div className="bg-white rounded-2xl shadow-xs border border-rose-200 p-6 space-y-5">
         <div className="flex items-center gap-2 text-rose-700">
           <AlertTriangle className="w-5 h-5" aria-hidden="true" />
           <h3 className="font-bold text-stone-900 text-sm">
@@ -862,26 +985,99 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
             : "No session is currently selected."}
         </p>
 
-        <div className="pt-1 flex flex-col sm:flex-row gap-3">
-          <button
-            type="button"
-            onClick={() => setConfirmAction("clear_records")}
-            disabled={clearing || !session}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold rounded-xl border border-amber-300 transition disabled:opacity-50"
-          >
-            <Database className="w-4 h-4 text-amber-700" aria-hidden="true" />
-            {clearing ? "Clearing..." : "Clear Consolidated Records"}
-          </button>
+        <div className="space-y-3 pt-1">
+          {/* Action 1: Clear All Tab Data (Recommended / Complete purge) */}
+          <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <span className="font-bold text-xs text-amber-950 block">
+                Clear All Tab Data (Keep Session Active)
+              </span>
+              <span className="text-[11px] text-amber-900/80 block mt-0.5">
+                Purges all raw traffic, extracted records, inferred schemas, and
+                outbound sync items for this tab. Session stays connected.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setConfirmAction("clear_tab_data")}
+              disabled={clearing || !session}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50 whitespace-nowrap flex-shrink-0"
+            >
+              <Eraser className="w-4 h-4" aria-hidden="true" />
+              {clearing ? "Clearing..." : "Clear Tab Data"}
+            </button>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => setConfirmAction("delete_session")}
-            disabled={deleting || !session}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
-          >
-            <Trash2 className="w-4 h-4" aria-hidden="true" />
-            {deleting ? "Deleting..." : "Delete Session & Wipe Storage"}
-          </button>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={() => setConfirmAction("clear_records")}
+              disabled={clearing || !session}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-stone-50 hover:bg-stone-100 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition disabled:opacity-50 flex-1"
+            >
+              <Database className="w-4 h-4 text-stone-600" aria-hidden="true" />
+              {clearing
+                ? "Clearing..."
+                : "Clear Records Only (Keep Raw Traffic)"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setConfirmAction("delete_session")}
+              disabled={deleting || !session}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-bold rounded-xl border border-rose-300 transition disabled:opacity-50 flex-1"
+            >
+              <Trash2 className="w-4 h-4 text-rose-600" aria-hidden="true" />
+              {deleting ? "Deleting..." : "Delete Session & Wipe Storage"}
+            </button>
+          </div>
+
+          {/* Action 4: Reset All Captured Data across all sessions (Keep Sessions) */}
+          <div className="pt-2 border-t border-stone-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <span className="font-semibold text-xs text-stone-800 block">
+                Reset All Captured Data (Keep Sessions Active)
+              </span>
+              <span className="text-[11px] text-stone-500 block">
+                Purges all raw traffic, records, schemas, and sync queues across
+                all sessions while retaining session configurations.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setConfirmAction("clear_all_captured")}
+              disabled={clearing || deleting}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-obsidian-950 text-xs font-semibold rounded-xl shadow-xs transition disabled:opacity-50 whitespace-nowrap flex-shrink-0"
+            >
+              <Eraser
+                className="w-3.5 h-3.5 text-obsidian-900"
+                aria-hidden="true"
+              />
+              Reset All Captured Data
+            </button>
+          </div>
+
+          {/* Action 5: Reset All Extension Data (Global Wipe) */}
+          <div className="pt-2 border-t border-stone-200/80 flex items-center justify-between gap-3">
+            <div>
+              <span className="font-semibold text-xs text-stone-700 block">
+                Reset All Extension Storage (Global Wipe)
+              </span>
+              <span className="text-[11px] text-stone-500 block">
+                Permanently wipes all sessions, responses, records, and sync
+                queues across the entire extension.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setConfirmAction("clear_all_global")}
+              disabled={deleting}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl shadow-xs transition disabled:opacity-50 whitespace-nowrap flex-shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+              Global Wipe
+            </button>
+          </div>
         </div>
       </div>
 
@@ -891,25 +1087,48 @@ export const Settings: React.FC<Props> = ({ session, onSessionCleared }) => {
         title={
           confirmAction === "delete_session"
             ? "Delete Capture Session?"
-            : confirmAction === "clear_sync_queue"
-              ? "Clear Sync Queue?"
-              : "Clear Consolidated Records?"
+            : confirmAction === "clear_all_global"
+              ? "Wipe All Extension Storage?"
+              : confirmAction === "clear_all_captured"
+                ? "Reset All Captured Data?"
+                : confirmAction === "clear_tab_data"
+                  ? "Clear All Tab Data?"
+                  : confirmAction === "clear_sync_queue"
+                    ? "Clear Sync Queue?"
+                    : "Clear Consolidated Records?"
         }
         description={
           confirmAction === "delete_session"
             ? `This permanently deletes "${session?.label || "this session"}" along with all captured raw responses, extracted records, and inferred schemas from browser storage.`
-            : confirmAction === "clear_sync_queue"
-              ? "This removes all pending, syncing, and failed medication updates from the local sync queue."
-              : "This clears materialized records for the current session while keeping raw API responses intact so you can re-extract them later."
+            : confirmAction === "clear_all_global"
+              ? "This permanently wipes ALL captured sessions, raw network traffic, extracted records, inferred schemas, and sync queues across the entire extension."
+              : confirmAction === "clear_all_captured"
+                ? "This permanently wipes all captured raw network traffic, extracted records, inferred schemas, and outbound sync queues across ALL tabs and sessions. Capture sessions will remain connected and active."
+                : confirmAction === "clear_tab_data"
+                  ? `This permanently purges all captured raw responses, extracted records, endpoint schemas, and sync queue items for "${session?.label || "this tab"}". The session will remain connected and active.`
+                  : confirmAction === "clear_sync_queue"
+                    ? "This removes all pending, syncing, and failed medication updates from the local sync queue."
+                    : "This clears materialized records for the current session while keeping raw API responses intact so you can re-extract them later."
         }
         confirmLabel={
           confirmAction === "delete_session"
             ? "Delete Permanently"
-            : confirmAction === "clear_sync_queue"
-              ? "Clear Sync Queue"
-              : "Clear Records"
+            : confirmAction === "clear_all_global"
+              ? "Wipe Everything Permanently"
+              : confirmAction === "clear_all_captured"
+                ? "Reset All Captured Data"
+                : confirmAction === "clear_tab_data"
+                  ? "Clear Tab Data"
+                  : confirmAction === "clear_sync_queue"
+                    ? "Clear Sync Queue"
+                    : "Clear Records"
         }
-        variant={confirmAction === "delete_session" ? "danger" : "warning"}
+        variant={
+          confirmAction === "delete_session" ||
+          confirmAction === "clear_all_global"
+            ? "danger"
+            : "warning"
+        }
         isBusy={clearing || deleting}
         onCancel={() => setConfirmAction(null)}
         onConfirm={executeConfirmedAction}

@@ -19,6 +19,8 @@ export type MessageType =
   | "FOCUS_TARGET_TAB"
   | "OPEN_DASHBOARD"
   | "OPEN_SIDEPANEL"
+  | "CLEAR_TAB_DATA"
+  | "CLEAR_ALL_DATA"
   | "SPHERE_GET_CONFIG"
   | "SPHERE_SAVE_CONFIG"
   | "SPHERE_FLUSH_QUEUE"
@@ -27,6 +29,25 @@ export type MessageType =
   | "SPHERE_CLEAR_QUEUE"
   | "SPHERE_TEST_CONNECTION"
   | "BANDAGO_TRIGGER_POLL";
+
+export interface ClearTabDataPayload {
+  sessionId?: string;
+  clearSyncQueue?: boolean;
+}
+
+export interface ClearAllDataPayload {
+  clearSessions?: boolean;
+  clearSyncQueue?: boolean;
+}
+
+export interface ClearTabDataResult {
+  clearedResponses: number;
+  clearedRecords: number;
+  clearedSources: number;
+  clearedSchemas: number;
+  clearedErrors: number;
+  targetSessionId?: string;
+}
 
 export interface StartCapturePayload {
   tabId: number;

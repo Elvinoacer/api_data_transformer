@@ -22,6 +22,7 @@ import {
   FastForward,
   ExternalLink,
   Loader2,
+  Eraser,
 } from "lucide-react";
 
 export type DashboardTab =
@@ -46,6 +47,7 @@ interface Props {
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
+  onClearTabData?: () => void;
   onOpenAutoPaginate: () => void;
   onFocusTargetTab: () => void;
   onRefresh: () => void;
@@ -66,6 +68,7 @@ export const Header: React.FC<Props> = ({
   onPause,
   onResume,
   onStop,
+  onClearTabData,
   onOpenAutoPaginate,
   onFocusTargetTab,
   onRefresh,
@@ -291,6 +294,27 @@ export const Header: React.FC<Props> = ({
               Stop
             </button>
           )}
+
+          {session &&
+            (metrics.responsesObserved > 0 ||
+              metrics.uniqueRecords > 0 ||
+              metrics.endpointGroups > 0 ||
+              metrics.captureErrors > 0) &&
+            onClearTabData && (
+              <button
+                type="button"
+                onClick={onClearTabData}
+                title="Clear all fetched & extracted data for this tab"
+                aria-label="Clear all captured data for active tab"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-stone-700 hover:text-amber-900 bg-white hover:bg-amber-50 rounded-xl border border-stone-200 hover:border-amber-300 text-xs font-semibold shadow-xs transition"
+              >
+                <Eraser
+                  className="w-3.5 h-3.5 text-amber-600"
+                  aria-hidden="true"
+                />
+                <span className="hidden sm:inline">Clear Tab Data</span>
+              </button>
+            )}
 
           <button
             type="button"

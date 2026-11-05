@@ -83,6 +83,8 @@ class CaptureController {
     ...DEFAULT_AUTO_PAGINATE_STATE,
   };
   private stopAutoPaginateRequested = false;
+  private lastClearedAtBySession = new Map<string, number>();
+  private globalClearedAt = 0;
 
   public getStatus(): CaptureStatus {
     return this.currentSession?.status || "idle";
@@ -420,6 +422,14 @@ class CaptureController {
     pending: PendingRequest,
   ): Promise<void> {
     if (!this.currentSession) return;
+
+    const sessionClearTime =
+      this.lastClearedAtBySession.get(this.currentSession.id) || 0;
+    const discardThreshold = Math.max(sessionClearTime, this.globalClearedAt);
+    if (pending.timestamp <= discardThreshold) {
+      return;
+    }
+
     const settings = await settingsRepo.getSettings();
 
     let bodyText = "";
@@ -429,12 +439,28 @@ class CaptureController {
         pending.requestId,
       );
     } catch (err: any) {
+      // Re-check discard threshold in case clear was triggered while awaiting body
+      const currentThreshold = Math.max(
+        this.lastClearedAtBySession.get(this.currentSession.id) || 0,
+        this.globalClearedAt,
+      );
+      if (pending.timestamp <= currentThreshold) return;
+
       await errorRepo.logError({
         sessionId: this.currentSession.id,
         kind: "body_retrieval",
         url: redactSensitiveUrl(pending.url, settings.sensitiveUrlParams),
         message: err.message || "Could not retrieve response body",
       });
+      return;
+    }
+
+    // Re-check discard threshold in case clear occurred during body retrieval
+    const currentThreshold = Math.max(
+      this.lastClearedAtBySession.get(this.currentSession.id) || 0,
+      this.globalClearedAt,
+    );
+    if (pending.timestamp <= currentThreshold) {
       return;
     }
 
@@ -1133,6 +1159,108 @@ class CaptureController {
       category: "extraction",
       message: `Reprocessed ${rawResponses.length} stored responses → ${metrics.uniqueRecords} unique records`,
     });
+  }
+
+  public async clearTabData(
+    sessionId?: string,
+    clearSyncQueue = true,
+  ): Promise<{
+    clearedResponses: number;
+    clearedRecords: number;
+    clearedSources: number;
+    clearedSchemas: number;
+    clearedErrors: number;
+    targetSessionId?: string;
+  }> {
+    await this.init();
+    const targetSessionId =
+      sessionId ||
+      this.currentSession?.id ||
+      (await sessionRepo.getActiveSession())?.id ||
+      (await sessionRepo.getAllSessions())[0]?.id;
+
+    const isActiveSession =
+      !targetSessionId ||
+      !this.currentSession ||
+      this.currentSession.id === targetSessionId;
+
+    if (targetSessionId) {
+      this.lastClearedAtBySession.set(targetSessionId, Date.now());
+    }
+
+    if (isActiveSession) {
+      this.trackedRequests.clear();
+      this.pendingRequests.clear();
+
+      if (this.autoPaginateState.status === "running") {
+        this.stopAutoPaginateRequested = true;
+        this.autoPaginateState = {
+          ...DEFAULT_AUTO_PAGINATE_STATE,
+          status: "idle",
+          message: "Reset because tab data was cleared",
+        };
+      }
+    }
+
+    if (!targetSessionId) {
+      if (clearSyncQueue) {
+        await SphereSyncClient.clearQueue();
+      }
+      return {
+        clearedResponses: 0,
+        clearedRecords: 0,
+        clearedSources: 0,
+        clearedSchemas: 0,
+        clearedErrors: 0,
+      };
+    }
+
+    // Only clear sync queue if clearing active tab or if no other session is active
+    const effectiveClearSyncQueue = isActiveSession ? clearSyncQueue : false;
+
+    const result = await sessionRepo.clearSessionData(targetSessionId, {
+      clearSyncQueue: effectiveClearSyncQueue,
+    });
+
+    if (this.currentSession && this.currentSession.id === targetSessionId) {
+      this.currentSession.lastResponseAt = undefined;
+    }
+
+    return {
+      ...result,
+      targetSessionId,
+    };
+  }
+
+  public async clearAllData(options?: {
+    clearSessions?: boolean;
+    clearSyncQueue?: boolean;
+  }): Promise<void> {
+    await this.init();
+    this.globalClearedAt = Date.now();
+    this.lastClearedAtBySession.clear();
+    this.trackedRequests.clear();
+    this.pendingRequests.clear();
+
+    if (this.autoPaginateState.status === "running") {
+      this.stopAutoPaginateRequested = true;
+    }
+    this.autoPaginateState = { ...DEFAULT_AUTO_PAGINATE_STATE };
+
+    await sessionRepo.clearAllCapturedData(options);
+
+    if (options?.clearSessions) {
+      if (this.activeTabId) {
+        try {
+          await cdpAdapter.detach(this.activeTabId);
+        } catch {}
+      }
+      this.activeTabId = null;
+      this.currentSession = null;
+      await this.syncBadge("idle");
+    } else if (this.currentSession) {
+      this.currentSession.lastResponseAt = undefined;
+    }
   }
 
   private pruneStaleRequests(): void {
