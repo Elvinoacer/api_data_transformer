@@ -92,6 +92,22 @@ export async function sendExtensionMessage<T = unknown, R = unknown>(
       };
     }
     const response = await chrome.runtime.sendMessage({ type, payload });
+    // A service worker that predates the current build rejects newer message
+    // types. Chrome keeps running the old worker after `npm run build` until the
+    // extension is reloaded, so explain that instead of a cryptic error.
+    if (
+      response &&
+      !response.success &&
+      typeof response.error === "string" &&
+      response.error.startsWith("Unknown message type")
+    ) {
+      return {
+        ...response,
+        error:
+          `${response.error}. The extension's background service worker is running an outdated build. ` +
+          `Open chrome://extensions and click Reload on "Live Network Data Collector", then reopen this page.`,
+      };
+    }
     return (
       response || {
         success: false,

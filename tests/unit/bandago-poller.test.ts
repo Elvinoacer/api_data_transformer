@@ -134,6 +134,7 @@ describe("BandaGoActivePoller", () => {
           stock: 80,
         }),
       ]),
+      "BACKGROUND_POLL",
     );
   });
 
@@ -211,7 +212,13 @@ describe("BandaGoActivePoller", () => {
     expect(chrome.scripting.executeScript).toHaveBeenCalledWith(
       expect.objectContaining({
         target: { tabId: 42 },
-        args: ["/graphql", expect.any(String), "Bearer jwt-token-xyz-123"],
+        args: [
+          "/graphql/",
+          expect.any(String),
+          expect.any(String),
+          expect.any(String),
+          "Bearer jwt-token-xyz-123",
+        ],
       }),
     );
   });
@@ -309,4 +316,391 @@ describe("BandaGoActivePoller", () => {
       delete (global as any).window;
     }
   });
+
+  it("in-tab poller function executes real BandaGo iDempiere queries and combines data", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    let passedFunc: any = null;
+    let passedArgs: any[] = [];
+    (chrome.scripting.executeScript as any).mockImplementation(
+      async (opts: any) => {
+        passedFunc = opts.func;
+        passedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      },
+    );
+
+    await BandaGoActivePoller.pollActiveTabs();
+    expect(passedFunc).toBeTypeOf("function");
+    expect(passedArgs).toHaveLength(5);
+    expect(passedArgs[0]).toBe("/graphql/");
+
+    const calls: Array<{ url: string; body: any }> = [];
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url: string, opts: any) => {
+      const body = JSON.parse(opts.body);
+      calls.push({ url, body });
+      if (body.operationName === "M_StorageOnHandForInventoryList") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: {
+              M_StorageOnHandGet: {
+                Results: [
+                  {
+                    UU: "storage-1",
+                    QtyOnHand: 45,
+                    M_Product: { UU: "prod-1", Name: "Metformin 500mg" },
+                  },
+                ],
+              },
+            },
+          }),
+        };
+      }
+      if (body.operationName === "M_ProductForProductListPage") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: {
+              M_ProductGet: {
+                Results: [
+                  {
+                    UU: "prod-1",
+                    Name: "Metformin 500mg",
+                    KnhtsConcept: { code: "KNHTS-MET-500", name: "Metformin" },
+                  },
+                ],
+              },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ data: {} }) };
+    });
+
+    try {
+      const result = await passedFunc(
+        passedArgs[0],
+        passedArgs[1],
+        passedArgs[2],
+        passedArgs[3],
+        "Bearer token-123",
+      );
+
+      expect(calls.length).toBe(2);
+      expect(calls[0].body.operationName).toBe("M_StorageOnHandForInventoryList");
+      expect(calls[1].body.operationName).toBe("M_ProductForProductListPage");
+      expect(result.data.M_StorageOnHandGet).toBeDefined();
+      expect(result.data.M_ProductGet).toBeDefined();
+    } finally {
+      global.fetch = origFetch;
+    }
+  });
+
+  it("in-tab poller retries with alternate trailing slash when 404 is encountered", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    let passedFunc: any = null;
+    let passedArgs: any[] = [];
+    (chrome.scripting.executeScript as any).mockImplementation(
+      async (opts: any) => {
+        passedFunc = opts.func;
+        passedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      },
+    );
+
+    await BandaGoActivePoller.pollActiveTabs();
+
+    const attemptedUrls: string[] = [];
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url: string) => {
+      attemptedUrls.push(url);
+      if (url === "/graphql/") {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => "Not Found",
+        };
+      }
+      if (url === "/graphql") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: {
+              M_StorageOnHandGet: { Results: [] },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ data: {} }) };
+    });
+
+    try {
+      const result = await passedFunc(
+        "/graphql/",
+        passedArgs[1],
+        passedArgs[2],
+        passedArgs[3],
+        "Bearer test",
+      );
+
+      expect(attemptedUrls).toContain("/graphql/");
+      expect(attemptedUrls).toContain("/graphql");
+      expect(result.data.M_StorageOnHandGet).toBeDefined();
+    } finally {
+      global.fetch = origFetch;
+    }
+  });
+
+  it("pollActiveTabs normalizes live iDempiere payload and enqueues to SphereSyncClient", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    const enqueueSpy = vi
+      .spyOn(SphereSyncClient, "enqueue")
+      .mockResolvedValue(1);
+
+    const futureDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+    (chrome.scripting.executeScript as any).mockResolvedValue([
+      {
+        result: {
+          data: {
+            M_ProductGet: {
+              Results: [
+                {
+                  UU: "prod-live-idempiere",
+                  Name: "Azithromycin 500mg Tablets",
+                  BH_SellPrice: 650,
+                  TotalQuantity: 30,
+                  KnhtsConcept: {
+                    code: "KNHTS-AZI-500",
+                    name: "Azithromycin Dihydrate",
+                  },
+                },
+              ],
+            },
+            M_StorageOnHandGet: {
+              Results: [
+                {
+                  UU: "storage-live-1",
+                  QtyOnHand: 30,
+                  M_Product: {
+                    UU: "prod-live-idempiere",
+                    Name: "Azithromycin 500mg Tablets",
+                    BH_SellPrice: 650,
+                  },
+                  M_AttributeSetInstance: {
+                    UU: "asi-live-1",
+                    Lot: "AZI-LOT-99",
+                    GuaranteeDate: futureDate,
+                    PurchasePrice: 400,
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = await BandaGoActivePoller.pollActiveTabs();
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(1);
+    expect(enqueueSpy).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          externalPosId: "prod-live-idempiere",
+          sku: "KNHTS-AZI-500",
+          genericName: "Azithromycin Dihydrate",
+          price: 650,
+          costPrice: 400,
+          stock: 30,
+          batches: [
+            expect.objectContaining({
+              batchNumber: "AZI-LOT-99",
+              qtyOnHand: 30,
+            }),
+          ],
+        }),
+      ],
+      "BACKGROUND_POLL",
+    );
+  });
+
+  it("in-tab poller automatically iterates through multi-page results when TotalPages > 1", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    let passedFunc: any = null;
+    let passedArgs: any[] = [];
+    (chrome.scripting.executeScript as any).mockImplementation(
+      async (opts: any) => {
+        passedFunc = opts.func;
+        passedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      },
+    );
+
+    await BandaGoActivePoller.pollActiveTabs();
+
+    const fetchCalls: Array<{ url: string; variables: any }> = [];
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url: string, opts: any) => {
+      const body = JSON.parse(opts.body);
+      fetchCalls.push({ url, variables: body.variables });
+      if (body.operationName === "M_StorageOnHandForInventoryList") {
+        const page = body.variables?.Page || 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: {
+              M_StorageOnHandGet: {
+                PagingInfo: { Page: page, PageSize: 500, TotalCount: 600, TotalPages: 2 },
+                Results: [
+                  {
+                    UU: `storage-p${page}`,
+                    QtyOnHand: 50,
+                    M_Product: { UU: `prod-p${page}`, Name: `Product Page ${page}` },
+                  },
+                ],
+              },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ data: {} }) };
+    });
+
+    try {
+      const result = await passedFunc(
+        passedArgs[0],
+        passedArgs[1],
+        passedArgs[2],
+        passedArgs[3],
+        "Bearer test",
+      );
+
+      // Verify page 1 and page 2 were both fetched
+      const storageCalls = fetchCalls.filter((c) => c.variables?.Page !== undefined);
+      expect(storageCalls.some((c) => c.variables.Page === 1)).toBe(true);
+      expect(storageCalls.some((c) => c.variables.Page === 2)).toBe(true);
+      // Both results should be merged into M_StorageOnHandGet.Results
+      expect(result.data.M_StorageOnHandGet.Results).toHaveLength(2);
+    } finally {
+      global.fetch = origFetch;
+    }
+  });
+
+  it("in-tab poller continues to execute productQuery when storageQuery fails with a schema error", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    let passedFunc: any = null;
+    let passedArgs: any[] = [];
+    (chrome.scripting.executeScript as any).mockImplementation(
+      async (opts: any) => {
+        passedFunc = opts.func;
+        passedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      },
+    );
+
+    await BandaGoActivePoller.pollActiveTabs();
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (_url: string, opts: any) => {
+      const body = JSON.parse(opts.body);
+      if (body.operationName === "M_StorageOnHandForInventoryList") {
+        // Storage query errors out (e.g. schema error or lack of permission)
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            errors: [{ message: "Cannot query field M_StorageOnHandGet on type Query" }],
+          }),
+        };
+      }
+      if (body.operationName === "M_ProductForProductListPage") {
+        // Product list succeeds
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: {
+              M_ProductGet: {
+                Results: [
+                  {
+                    UU: "prod-resilient-1",
+                    Name: "Ibuprofen 200mg",
+                    BH_SellPrice: 120,
+                    TotalQuantity: 50,
+                  },
+                ],
+              },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ data: {} }) };
+    });
+
+    try {
+      const result = await passedFunc(
+        passedArgs[0],
+        passedArgs[1],
+        passedArgs[2],
+        passedArgs[3],
+        "Bearer test",
+      );
+
+      expect(result.data.M_ProductGet).toBeDefined();
+      expect(result.data.M_ProductGet.Results).toHaveLength(1);
+    } finally {
+      global.fetch = origFetch;
+    }
+  });
 });
+

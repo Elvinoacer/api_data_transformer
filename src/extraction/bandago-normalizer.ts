@@ -8,6 +8,7 @@ export interface SphereBatchSyncItem {
   batchNumber: string;
   qtyOnHand: number;
   expiryDate: string | null;
+  externalBatchId?: string;
 }
 
 export interface SphereProductSyncItem {
@@ -236,29 +237,83 @@ export class BandaGoNormalizer {
       return false;
     }
     const r = raw as Record<string, any>;
-    const hasIdentifier = Boolean(r.uu || r.id || r.externalPosId);
+    // BandaGo's GraphQL mirrors iDempiere column names (e.g. `UU`, `Name`,
+    // `M_Product_UU`) alongside lower-case aliases, so accept both.
+    const hasIdentifier = Boolean(
+      r.UU || r.uu || r.M_Product_UU || r.externalPosId || r.id || r.M_Product_ID,
+    );
     const hasName = Boolean(r.name || r.Name || r.productName);
-    const hasPharmacyTraits =
-      "bh_sellprice" in r ||
-      "BH_SellPrice" in r ||
-      "bh_buyprice" in r ||
-      "BH_BuyPrice" in r ||
-      "bh_hasexpiration" in r ||
-      "BH_HasExpiration" in r ||
+
+    // Reject non-product entities that happen to carry a name + id
+    // (e.g. AD_Language, C_BPartner) when GraphQL exposes a __typename.
+    if (typeof r.__typename === "string" && !/product/i.test(r.__typename)) {
+      return false;
+    }
+    // iDempiere ProductType: I = Item (stocked). S/E/R/A = services, expenses,
+    // resources, assets (e.g. consultation fees) which must not become shop items.
+    // In BandaGo's GraphQL schema, ProductType is an AD_Ref_List object `{ UU, Value }`.
+    const rawProductType =
+      typeof r.ProductType === "object" && r.ProductType !== null
+        ? (r.ProductType.Value ?? r.ProductType.value)
+        : (r.ProductType ?? r.productType);
+    if (
+      typeof rawProductType === "string" &&
+      rawProductType.trim() !== "" &&
+      rawProductType.trim().toUpperCase() !== "I"
+    ) {
+      return false;
+    }
+
+    const hasStockField =
+      "TotalQuantity" in r ||
+      "totalQuantity" in r ||
       "quantityOnHand" in r ||
       "QuantityOnHand" in r ||
+      "M_StorageOnHandList" in r ||
       "storageOnHand" in r ||
       "M_StorageOnHand" in r ||
       "batches" in r ||
       "Batches" in r ||
       "stock" in r ||
-      "Stock" in r ||
-      "price" in r ||
-      "Price" in r ||
+      "Stock" in r;
+
+    // In live BandaGo GraphQL, display-only fragments (e.g. M_ProductDisplayForVisits
+    // or ReceiveProducts autocomplete) expose `__typename: "M_Product"` with `{ UU, Name }`
+    // and no inventory fields. Never treat stockless GraphQL fragments as full sync payloads,
+    // otherwise they would overwrite real stock with 0.
+    if (typeof r.__typename === "string" && !hasStockField) {
+      return false;
+    }
+
+    const hasPharmacyTraits =
+      hasStockField ||
+      "bh_sellprice" in r ||
+      "BH_SellPrice" in r ||
+      "bh_buyprice" in r ||
+      "BH_BuyPrice" in r ||
+      "LastPurchasePrice" in r ||
+      "M_ProductPrices" in r ||
+      "bh_hasexpiration" in r ||
+      "BH_HasExpiration" in r ||
       "m_product_category" in r ||
       "M_Product_Category" in r;
 
     return hasIdentifier && hasName && hasPharmacyTraits;
+  }
+
+  /**
+   * Identifies inverted BandaGo `M_StorageOnHandGet` rows where each element represents
+   * a batch/locator holding nested `M_Product` + top-level `QtyOnHand` & `M_AttributeSetInstance`.
+   */
+  static isStorageOnHandRow(raw: unknown): raw is Record<string, any> {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const r = raw as Record<string, any>;
+    const prod = r.M_Product || r.m_product;
+    if (!prod || typeof prod !== "object" || Array.isArray(prod)) return false;
+    const prodId = prod.UU || prod.uu || prod.M_Product_UU || prod.id;
+    const prodName = prod.Name || prod.name || prod.productName;
+    const hasBatchQty = "QtyOnHand" in r || "qtyOnHand" in r;
+    return Boolean(prodId && prodName && hasBatchQty);
   }
 
   /**
@@ -268,11 +323,19 @@ export class BandaGoNormalizer {
     if (!raw || typeof raw !== "object") return null;
 
     const externalPosId = String(
-      raw.uu || raw.id || raw.externalPosId || "",
+      raw.UU ||
+        raw.uu ||
+        raw.M_Product_UU ||
+        raw.externalPosId ||
+        raw.id ||
+        raw.M_Product_ID ||
+        "",
     ).trim();
     const name = String(raw.name || raw.Name || raw.productName || "").trim();
 
     if (!externalPosId || !name) return null;
+
+    const isInactive = raw.IsActive === false || raw.isActive === false;
 
     const genericName =
       raw.genericName ||
@@ -281,6 +344,8 @@ export class BandaGoNormalizer {
       raw.bh_genericname ||
       raw.BH_GenericName ||
       raw.bh_generic_name ||
+      raw.KnhtsConcept?.name ||
+      raw.BH_Concept?.bh_display_name ||
       null;
 
     // Extract Strength and Form from drug title
@@ -303,6 +368,7 @@ export class BandaGoNormalizer {
     const rawCategory = String(
       raw.m_product_category?.name ||
         raw.M_Product_Category?.Name ||
+        raw.KnhtsConcept?.name ||
         raw.category?.name ||
         raw.category ||
         "OTC",
@@ -321,24 +387,35 @@ export class BandaGoNormalizer {
       }
     }
 
-    // Prescription Classification (PPB Guidelines & BandaGo hasExpiration flag)
+    // Prescription Classification (PPB Guidelines & BandaGo expiration/attribute flags)
+    const hasExpirationFlag = Boolean(
+      raw.bh_hasexpiration ||
+        raw.BH_HasExpiration ||
+        raw.M_AttributeSet?.IsGuaranteeDate,
+    );
     const requiresPrescription =
-      Boolean(raw.bh_hasexpiration && resolvedCategory.rx) ||
+      Boolean(hasExpirationFlag && resolvedCategory.rx) ||
       resolvedCategory.rx ||
       RX_SCHEDULE_REGEX.test(name);
 
     // Batch & FEFO Expiry Calculation
-    // Evaluates storageOnHand batches: discards expired stock, ignores depleted batches (qty <= 0),
-    // and identifies the nearest future expiry date of available stock.
+    // Evaluates M_StorageOnHandList / storageOnHand batches: discards expired stock,
+    // ignores depleted batches (qty <= 0), and identifies nearest future expiry date.
     const now = Date.now();
     let validStock = 0;
     let nearestExpiryDate: string | null = null;
     const normalizedBatches: SphereBatchSyncItem[] = [];
 
     const batches =
-      raw.storageOnHand || raw.M_StorageOnHand || raw.batches || raw.Batches;
+      raw.M_StorageOnHandList ||
+      raw.storageOnHand ||
+      raw.M_StorageOnHand ||
+      raw.batches ||
+      raw.Batches;
 
-    if (Array.isArray(batches) && batches.length > 0) {
+    if (isInactive) {
+      validStock = 0;
+    } else if (Array.isArray(batches) && batches.length > 0) {
       for (const [idx, batch] of batches.entries()) {
         if (!batch || typeof batch !== "object") continue;
         const rawQty = batch.qtyOnHand ?? batch.QtyOnHand ?? 0;
@@ -400,15 +477,47 @@ export class BandaGoNormalizer {
             ? String(candidateLot).trim()
             : `LOT-${externalPosId.slice(0, 4)}-${idx + 1}`;
 
-        normalizedBatches.push({
-          batchNumber: lotNo,
-          qtyOnHand: qty,
-          expiryDate: expiryIso,
-        });
+        const rawBatchId =
+          batch.externalBatchId || batch.UU || batch.uu || asi.UU || asi.uu;
+        const externalBatchId =
+          typeof rawBatchId === "string" && rawBatchId.trim() !== ""
+            ? rawBatchId.trim()
+            : undefined;
+
+        const existingBatch = normalizedBatches.find(
+          (b) => b.batchNumber === lotNo,
+        );
+        if (existingBatch) {
+          existingBatch.qtyOnHand += qty;
+          if (
+            expiryIso &&
+            (!existingBatch.expiryDate ||
+              new Date(expiryIso).getTime() <
+                new Date(existingBatch.expiryDate).getTime())
+          ) {
+            existingBatch.expiryDate = expiryIso;
+          }
+        } else {
+          normalizedBatches.push({
+            batchNumber: lotNo,
+            qtyOnHand: qty,
+            expiryDate: expiryIso,
+            ...(externalBatchId ? { externalBatchId } : {}),
+          });
+        }
       }
+    } else if (Array.isArray(batches) && batches.length === 0) {
+      // Explicit empty storage list means 0 physical units in warehouse
+      validStock = 0;
     } else {
       const rawStock = Number(
-        raw.quantityOnHand ?? raw.QuantityOnHand ?? raw.stock ?? 0,
+        raw.TotalQuantity ??
+          raw.totalQuantity ??
+          raw.quantityOnHand ??
+          raw.QuantityOnHand ??
+          raw.stock ??
+          raw.Stock ??
+          0,
       );
       validStock = Math.max(
         0,
@@ -416,13 +525,28 @@ export class BandaGoNormalizer {
       );
     }
 
-    // Pricing parsing (guarantee non-negative values)
-    const rawPrice = raw.bh_sellprice ?? raw.BH_SellPrice ?? raw.price ?? 0;
+    // Pricing parsing: supports BH_SellPrice as well as M_ProductPrices[0].PriceStd
+    const priceFromList =
+      Array.isArray(raw.M_ProductPrices) && raw.M_ProductPrices.length > 0
+        ? raw.M_ProductPrices.find(
+            (p: any) => p && Number(p.PriceStd ?? p.priceStd) > 0,
+          )?.PriceStd ?? raw.M_ProductPrices[0]?.PriceStd
+        : undefined;
+
+    const rawPrice =
+      raw.bh_sellprice ??
+      raw.BH_SellPrice ??
+      raw.price ??
+      raw.Price ??
+      priceFromList ??
+      0;
     const price = Math.max(0, Number(rawPrice) || 0);
 
     const costPriceRaw =
       raw.bh_buyprice ??
       raw.BH_BuyPrice ??
+      raw.LastPurchasePrice ??
+      raw.lastPurchasePrice ??
       raw.buyPrice ??
       raw.BuyPrice ??
       raw.costPrice ??
@@ -432,9 +556,8 @@ export class BandaGoNormalizer {
         ? Math.max(0, Number(costPriceRaw) || 0)
         : null;
 
-    const description = raw.description
-      ? String(raw.description).trim()
-      : undefined;
+    const rawDesc = raw.description ?? raw.Description;
+    const description = rawDesc ? String(rawDesc).trim() : undefined;
     const packSize =
       raw.packSize || raw.pack_size || raw.bh_packsize
         ? String(raw.packSize || raw.pack_size || raw.bh_packsize).trim()
@@ -442,7 +565,7 @@ export class BandaGoNormalizer {
 
     return {
       externalPosId,
-      sku: raw.value || raw.Value || raw.sku || null,
+      sku: raw.value || raw.Value || raw.sku || raw.KnhtsConcept?.code || null,
       name,
       genericName: genericName ? String(genericName).trim() : null,
       dosageForm: dosageForm ? String(dosageForm).trim() : null,
@@ -464,11 +587,131 @@ export class BandaGoNormalizer {
   }
 
   /**
+   * Merges two normalized product representations of the same externalPosId,
+   * cleanly reconciling physical storage on hand (lots, quantities, expirations)
+   * with catalog metadata (SKUs, Kenya national health concept codes, prices).
+   */
+  static mergeProducts(
+    existing: SphereProductInput,
+    incoming: SphereProductInput,
+    isPhysicalStorageItem = false,
+  ): SphereProductInput {
+    let batches: SphereBatchSyncItem[] = [];
+    let stock = 0;
+    let nearestExpiryDate: string | null = null;
+
+    const existingHasBatches = existing.batches && existing.batches.length > 0;
+    const incomingHasBatches = incoming.batches && incoming.batches.length > 0;
+
+    if (existingHasBatches && incomingHasBatches) {
+      // Both records carry batches: aggregate by batchNumber across multiple locators
+      const batchMap = new Map<string, SphereBatchSyncItem>();
+      for (const b of [...existing.batches, ...incoming.batches]) {
+        const key = b.batchNumber.trim();
+        const prevB = batchMap.get(key);
+        if (prevB) {
+          prevB.qtyOnHand += b.qtyOnHand;
+          if (
+            b.expiryDate &&
+            (!prevB.expiryDate ||
+              new Date(b.expiryDate).getTime() < new Date(prevB.expiryDate).getTime())
+          ) {
+            prevB.expiryDate = b.expiryDate;
+          }
+        } else {
+          batchMap.set(key, { ...b, batchNumber: key });
+        }
+      }
+      batches = Array.from(batchMap.values());
+      stock = batches.reduce((sum, b) => sum + b.qtyOnHand, 0);
+    } else if (incomingHasBatches) {
+      batches = incoming.batches;
+      stock = incoming.stock;
+      nearestExpiryDate = incoming.nearestExpiryDate;
+    } else if (existingHasBatches) {
+      batches = existing.batches;
+      stock = existing.stock;
+      nearestExpiryDate = existing.nearestExpiryDate;
+    } else if (isPhysicalStorageItem) {
+      // Record originated from physical warehouse rows where all lots were expired or depleted
+      batches = [];
+      stock = 0;
+      nearestExpiryDate = null;
+    } else {
+      batches = [];
+      stock = incoming.stock !== undefined ? incoming.stock : existing.stock;
+      nearestExpiryDate = null;
+    }
+
+    // Determine earliest valid expiry date from surviving batches
+    if (!nearestExpiryDate && batches.length > 0) {
+      for (const b of batches) {
+        if (b.expiryDate) {
+          if (
+            !nearestExpiryDate ||
+            new Date(b.expiryDate).getTime() < new Date(nearestExpiryDate).getTime()
+          ) {
+            nearestExpiryDate = b.expiryDate;
+          }
+        }
+      }
+    }
+
+    const price = (incoming.price > 0 ? incoming.price : existing.price) || 0;
+    const costPrice = incoming.costPrice ?? existing.costPrice ?? null;
+    const buyPrice = incoming.buyPrice ?? existing.buyPrice ?? costPrice;
+
+    const sku = incoming.sku || existing.sku || null;
+    const genericName = incoming.genericName || existing.genericName || null;
+    const dosageForm = incoming.dosageForm || existing.dosageForm || null;
+    const strength = incoming.strength || existing.strength || undefined;
+    const description = incoming.description || existing.description || undefined;
+    const packSize = incoming.packSize || existing.packSize || undefined;
+
+    const categorySlug =
+      incoming.categorySlug && incoming.categorySlug !== "otc"
+        ? incoming.categorySlug
+        : existing.categorySlug || "otc";
+
+    return {
+      externalPosId: existing.externalPosId,
+      name: incoming.name || existing.name,
+      sku,
+      genericName,
+      dosageForm,
+      strength,
+      slug: existing.slug || incoming.slug,
+      categorySlug,
+      price,
+      buyPrice,
+      costPrice,
+      stock: Math.max(0, Math.floor(stock)),
+      inStock: stock > 0,
+      requiresPrescription: Boolean(
+        existing.requiresPrescription || incoming.requiresPrescription,
+      ),
+      imageUrl:
+        categorySlug !== "otc" && incoming.imageUrl.includes("cat-otc")
+          ? existing.imageUrl
+          : incoming.imageUrl || existing.imageUrl,
+      nearestExpiryDate,
+      batches,
+      description,
+      packSize,
+    };
+  }
+
+  /**
    * Recursively traverses an arbitrary GraphQL response payload (query or mutation)
-   * to extract and normalize all candidate BandaGo medication products.
+   * to extract and normalize all candidate BandaGo medication products, including
+   * inverted `M_StorageOnHandGet` batch lists.
    */
   static extractProductsFromPayload(payload: unknown): SphereProductInput[] {
     const candidates: Record<string, any>[] = [];
+    const groupedStorageByProduct = new Map<
+      string,
+      { product: Record<string, any>; batches: Record<string, any>[] }
+    >();
     const seen = new Set<unknown>();
 
     const traverse = (node: unknown) => {
@@ -482,7 +725,24 @@ export class BandaGoNormalizer {
         }
       } else {
         const obj = node as Record<string, any>;
-        if (BandaGoNormalizer.isProductRecord(obj)) {
+        if (BandaGoNormalizer.isStorageOnHandRow(obj)) {
+          const prod = (obj.M_Product || obj.m_product) as Record<string, any>;
+          seen.add(prod); // Prevent bare nested M_Product (without QtyOnHand) from being parsed separately
+          const prodId = String(
+            prod.UU || prod.uu || prod.M_Product_UU || prod.id || "",
+          ).trim();
+          if (prodId) {
+            const existing = groupedStorageByProduct.get(prodId);
+            if (existing) {
+              existing.batches.push(obj);
+            } else {
+              groupedStorageByProduct.set(prodId, {
+                product: prod,
+                batches: [obj],
+              });
+            }
+          }
+        } else if (BandaGoNormalizer.isProductRecord(obj)) {
           candidates.push(obj);
         } else {
           for (const val of Object.values(obj)) {
@@ -494,12 +754,50 @@ export class BandaGoNormalizer {
 
     traverse(payload);
 
+    // Track which products had physical inventory storage rows returned
+    const storageProductUUs = new Set<string>(groupedStorageByProduct.keys());
+
+    // Append synthesized products built from inverted M_StorageOnHandGet rows
+    for (const { product, batches } of groupedStorageByProduct.values()) {
+      const firstAsiPrice = batches.find(
+        (b) =>
+          b?.M_AttributeSetInstance?.PurchasePrice != null ||
+          b?.m_attributesetinstance?.purchasePrice != null,
+      );
+      const purchasePrice =
+        firstAsiPrice?.M_AttributeSetInstance?.PurchasePrice ??
+        firstAsiPrice?.m_attributesetinstance?.purchasePrice;
+
+      candidates.push({
+        ...product,
+        ...(purchasePrice != null &&
+        product.BH_BuyPrice == null &&
+        product.LastPurchasePrice == null
+          ? { LastPurchasePrice: purchasePrice }
+          : {}),
+        M_StorageOnHandList: batches,
+        _isFromStorage: true,
+      });
+    }
+
     const normalizedMap = new Map<string, SphereProductInput>();
     for (const raw of candidates) {
       const item = BandaGoNormalizer.normalize(raw);
       if (item) {
-        // Keep latest/cleanest by externalPosId
-        normalizedMap.set(item.externalPosId, item);
+        const isFromStorage =
+          Boolean(raw._isFromStorage) || storageProductUUs.has(item.externalPosId);
+        const prev = normalizedMap.get(item.externalPosId);
+        if (prev) {
+          const merged = BandaGoNormalizer.mergeProducts(prev, item, isFromStorage);
+          normalizedMap.set(item.externalPosId, merged);
+        } else {
+          // If this single item originated from physical storage where all lots expired, clamp to 0
+          if (raw._isFromStorage && item.batches.length === 0) {
+            item.stock = 0;
+            item.inStock = false;
+          }
+          normalizedMap.set(item.externalPosId, item);
+        }
       }
     }
 

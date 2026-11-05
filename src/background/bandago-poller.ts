@@ -107,7 +107,85 @@ export class BandaGoActivePoller {
 
     const cachedAuthHeader = await CdpNetworkAdapter.getAuthHeader(origin);
 
-    const graphqlQuery = `
+    const storageOnHandQuery = `
+      query M_StorageOnHandForInventoryList($Page: Int, $Size: Int) {
+        M_StorageOnHandGet(Page: $Page, Size: $Size) {
+          PagingInfo {
+            Page
+            PageSize
+            TotalCount
+            TotalPages
+          }
+          Results {
+            M_AttributeSetInstance {
+              GuaranteeDate
+              Lot
+              PurchaseDate
+              PurchasePrice
+              UU
+            }
+            M_Locator {
+              M_Warehouse {
+                Name
+                UU
+              }
+              UU
+            }
+            M_Product {
+              BH_SellPrice
+              BH_SoonToExpireDays {
+                Name
+                UU
+                Value
+              }
+              C_UOM {
+                StdPrecision
+                UU
+              }
+              Created
+              M_AttributeSet {
+                IsGuaranteeDate
+                IsLot
+              }
+              Name
+              UU
+            }
+            QtyOnHand
+            UU
+          }
+        }
+      }
+    `;
+
+    const productListQuery = `
+      query M_ProductForProductListPage($Page: Int, $Size: Int) {
+        M_ProductGet(Page: $Page, Size: $Size) {
+          PagingInfo {
+            Page
+            PageSize
+            TotalCount
+            TotalPages
+          }
+          Results {
+            bh_reorder_level
+            bh_reorder_quantity
+            BH_SellPrice
+            Created
+            IsActive
+            KnhtsConcept {
+              code
+              name
+            }
+            LastPurchasePrice
+            Name
+            TotalQuantity
+            UU
+          }
+        }
+      }
+    `;
+
+    const fallbackInventoryQuery = `
       query AutoSyncInventory {
         products(limit: 250, offset: 0) {
           id
@@ -132,9 +210,24 @@ export class BandaGoActivePoller {
         target: { tabId },
         func: async (
           gqlEndpoint: string,
-          query: string,
-          cachedAuthHeader: string | null,
+          storageOrSingleQuery: string,
+          param3?: string | null,
+          param4?: string | null,
+          param5?: string | null,
         ) => {
+          let cachedAuthHeader: string | null = null;
+          let storageQuery = storageOrSingleQuery;
+          let productQuery: string | null = null;
+          let legacyQuery: string | null = null;
+
+          if (param5 !== undefined || param4 !== undefined) {
+            productQuery = param3 ?? null;
+            legacyQuery = param4 ?? null;
+            cachedAuthHeader = param5 ?? null;
+          } else {
+            cachedAuthHeader = param3 ?? null;
+          }
+
           try {
             // Fallback: look for JWT token in localStorage/sessionStorage if CDP hasn't captured a header yet
             let authHeader = cachedAuthHeader;
@@ -206,40 +299,170 @@ export class BandaGoActivePoller {
               headers["Authorization"] = authHeader;
             }
 
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const executeGql = async (
+              endpoint: string,
+              queryStr: string,
+              variables?: Record<string, any>,
+            ) => {
+              const opMatch = queryStr.match(/(?:query|mutation)\s+([A-Za-z0-9_]+)/);
+              const opName = opMatch ? opMatch[1] : undefined;
+              const bodyObj: Record<string, any> = { query: queryStr };
+              if (opName) bodyObj.operationName = opName;
+              if (variables) bodyObj.variables = variables;
 
-            try {
-              const res = await fetch(gqlEndpoint, {
-                method: "POST",
-                credentials: "include",
-                headers,
-                signal: controller.signal,
-                body: JSON.stringify({
-                  // Must match the operation name declared in `query` below,
-                  // otherwise GraphQL servers reject with "Unknown operation named ..."
-                  operationName: "AutoSyncInventory",
-                  query,
-                }),
-              });
-              if (!res.ok) {
-                const text = await res.text();
-                return { error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+              try {
+                const res = await fetch(endpoint, {
+                  method: "POST",
+                  credentials: "include",
+                  headers,
+                  signal: controller.signal,
+                  body: JSON.stringify(bodyObj),
+                });
+                if (!res.ok) {
+                  const text = await res.text();
+                  return {
+                    error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
+                    status: res.status,
+                  };
+                }
+                return await res.json();
+              } catch (e: any) {
+                return {
+                  error:
+                    e?.name === "AbortError"
+                      ? "BandaGo in-tab fetch timed out after 15 seconds"
+                      : e.message || "Fetch failed",
+                };
+              } finally {
+                clearTimeout(timeoutId);
               }
-              return await res.json();
-            } finally {
-              clearTimeout(timeoutId);
+            };
+
+            // Single query invocation (direct or mock tests)
+            if (!productQuery && !legacyQuery) {
+              return await executeGql(gqlEndpoint, storageQuery);
             }
+
+            // BandaGo iDempiere Inventory Polling
+            let endpointToUse = gqlEndpoint;
+            let storageRes: any = await executeGql(endpointToUse, storageQuery, {
+              Page: 1,
+              Size: 500,
+            });
+
+            // If 404, retry with alternative trailing slash format
+            if (storageRes?.status === 404) {
+              const altEndpoint = endpointToUse.endsWith("/")
+                ? endpointToUse.slice(0, -1)
+                : `${endpointToUse}/`;
+              const altRes = await executeGql(altEndpoint, storageQuery, {
+                Page: 1,
+                Size: 500,
+              });
+              if (!altRes.error) {
+                endpointToUse = altEndpoint;
+                storageRes = altRes;
+              }
+            }
+
+            // If credentials expired (HTTP 401), exit early immediately
+            if (storageRes?.status === 401) {
+              return storageRes;
+            }
+
+            // Multi-page pagination support for storage on hand (up to 10 pages / 5000 records)
+            if (storageRes?.data?.M_StorageOnHandGet?.PagingInfo?.TotalPages > 1) {
+              const totalPages = Math.min(
+                storageRes.data.M_StorageOnHandGet.PagingInfo.TotalPages,
+                10,
+              );
+              for (let page = 2; page <= totalPages; page++) {
+                const nextPage = await executeGql(endpointToUse, storageQuery, {
+                  Page: page,
+                  Size: 500,
+                });
+                if (Array.isArray(nextPage?.data?.M_StorageOnHandGet?.Results)) {
+                  storageRes.data.M_StorageOnHandGet.Results.push(
+                    ...nextPage.data.M_StorageOnHandGet.Results,
+                  );
+                }
+              }
+            }
+
+            // Fetch catalog product list even if storage query encountered errors
+            let productRes: any = null;
+            if (productQuery) {
+              productRes = await executeGql(endpointToUse, productQuery, {
+                Page: 1,
+                Size: 500,
+              });
+
+              // If initial endpoint gave 404 and wasn't flipped yet, try alternate slash
+              if (productRes?.status === 404 && endpointToUse === gqlEndpoint) {
+                const altEndpoint = endpointToUse.endsWith("/")
+                  ? endpointToUse.slice(0, -1)
+                  : `${endpointToUse}/`;
+                const altRes = await executeGql(altEndpoint, productQuery, {
+                  Page: 1,
+                  Size: 500,
+                });
+                if (!altRes.error) {
+                  endpointToUse = altEndpoint;
+                  productRes = altRes;
+                }
+              }
+
+              // Multi-page pagination support for product catalog
+              if (productRes?.data?.M_ProductGet?.PagingInfo?.TotalPages > 1) {
+                const totalPages = Math.min(
+                  productRes.data.M_ProductGet.PagingInfo.TotalPages,
+                  10,
+                );
+                for (let page = 2; page <= totalPages; page++) {
+                  const nextPage = await executeGql(endpointToUse, productQuery, {
+                    Page: page,
+                    Size: 500,
+                  });
+                  if (Array.isArray(nextPage?.data?.M_ProductGet?.Results)) {
+                    productRes.data.M_ProductGet.Results.push(
+                      ...nextPage.data.M_ProductGet.Results,
+                    );
+                  }
+                }
+              }
+            }
+
+            if (storageRes?.data || productRes?.data) {
+              return {
+                data: {
+                  ...(storageRes?.data || {}),
+                  ...(productRes?.data || {}),
+                },
+              };
+            }
+
+            // Fallback to legacy query if iDempiere queries fail or aren't supported
+            if (legacyQuery) {
+              return await executeGql(endpointToUse, legacyQuery);
+            }
+
+            return storageRes?.error ? storageRes : (productRes || storageRes);
           } catch (e: any) {
             return {
-              error:
-                e?.name === "AbortError"
-                  ? "BandaGo in-tab fetch timed out after 15 seconds"
-                  : e.message || "Fetch failed",
+              error: e.message || "Fetch failed",
             };
           }
         },
-        args: ["/graphql", graphqlQuery, cachedAuthHeader],
+        args: [
+          "/graphql/",
+          storageOnHandQuery,
+          productListQuery,
+          fallbackInventoryQuery,
+          cachedAuthHeader,
+        ],
       });
 
       const response = results[0]?.result;
@@ -283,7 +506,7 @@ export class BandaGoActivePoller {
           : BandaGoNormalizer.extractProductsFromPayload(response);
 
       if (normalized.length > 0) {
-        await SphereSyncClient.enqueue(normalized);
+        await SphereSyncClient.enqueue(normalized, "BACKGROUND_POLL");
         return {
           success: true,
           count: normalized.length,

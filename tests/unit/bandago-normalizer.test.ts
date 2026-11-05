@@ -441,4 +441,169 @@ describe("BandaGoNormalizer (FEFO & PPB Regulations)", () => {
     expect(normalized?.batches[0].batchNumber).toBe("0");
     expect(normalized?.batches[1].batchNumber).toBe("LOT-drug-2");
   });
+
+  it("extractProductsFromPayload merges M_ProductGet catalog attributes (SKU, generic) with M_StorageOnHandGet batches", () => {
+    const futureDate = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString();
+    const payload = {
+      data: {
+        M_ProductGet: {
+          Results: [
+            {
+              UU: "prod-uu-merged",
+              Name: "Amoxicillin 500mg Capsules",
+              BH_SellPrice: 500,
+              TotalQuantity: 100,
+              IsActive: true,
+              KnhtsConcept: {
+                code: "KNHTS-AMOX-500",
+                name: "Amoxicillin Trihydrate",
+              },
+            },
+          ],
+        },
+        M_StorageOnHandGet: {
+          Results: [
+            {
+              UU: "storage-uu-1",
+              QtyOnHand: 100,
+              M_Product: {
+                UU: "prod-uu-merged",
+                Name: "Amoxicillin 500mg Capsules",
+                BH_SellPrice: 500,
+              },
+              M_AttributeSetInstance: {
+                UU: "asi-uu-1",
+                Lot: "AMX-LOT-2026",
+                GuaranteeDate: futureDate,
+                PurchasePrice: 320,
+              },
+            },
+          ],
+        },
+      },
+    };
+
+    const products = BandaGoNormalizer.extractProductsFromPayload(payload);
+    expect(products).toHaveLength(1);
+    const prod = products[0];
+    expect(prod.externalPosId).toBe("prod-uu-merged");
+    expect(prod.sku).toBe("KNHTS-AMOX-500");
+    expect(prod.genericName).toBe("Amoxicillin Trihydrate");
+    expect(prod.price).toBe(500);
+    expect(prod.costPrice).toBe(320);
+    expect(prod.stock).toBe(100);
+    expect(prod.batches).toHaveLength(1);
+    expect(prod.batches[0].batchNumber).toBe("AMX-LOT-2026");
+    expect(prod.batches[0].qtyOnHand).toBe(100);
+  });
+
+  it("extractProductsFromPayload retains SKU, genericName, and LastPurchasePrice when all storage lots are expired", () => {
+    const pastDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const payload = {
+      data: {
+        M_ProductGet: {
+          Results: [
+            {
+              UU: "prod-exp-verify",
+              Name: "Amoxicillin 500mg Capsules",
+              BH_SellPrice: 500,
+              TotalQuantity: 25,
+              KnhtsConcept: {
+                code: "KNHTS-AMOX-500",
+                name: "Amoxicillin Trihydrate",
+              },
+              LastPurchasePrice: 350,
+            },
+          ],
+        },
+        M_StorageOnHandGet: {
+          Results: [
+            {
+              UU: "storage-exp-1",
+              QtyOnHand: 25,
+              M_Product: {
+                UU: "prod-exp-verify",
+                Name: "Amoxicillin 500mg Capsules",
+                BH_SellPrice: 500,
+              },
+              M_AttributeSetInstance: {
+                UU: "asi-exp-1",
+                Lot: "EXP-BATCH-99",
+                GuaranteeDate: pastDate,
+              },
+            },
+          ],
+        },
+      },
+    };
+
+    const products = BandaGoNormalizer.extractProductsFromPayload(payload);
+    expect(products).toHaveLength(1);
+    const prod = products[0];
+    expect(prod.externalPosId).toBe("prod-exp-verify");
+    // Under PPB regulations, expired lots legally reduce sellable stock to 0
+    expect(prod.stock).toBe(0);
+    expect(prod.inStock).toBe(false);
+    expect(prod.batches).toHaveLength(0);
+    // Crucially: catalog metadata must NOT be wiped out!
+    expect(prod.sku).toBe("KNHTS-AMOX-500");
+    expect(prod.genericName).toBe("Amoxicillin Trihydrate");
+    expect(prod.costPrice).toBe(350);
+    expect(prod.buyPrice).toBe(350);
+    expect(prod.price).toBe(500);
+  });
+
+  it("extractProductsFromPayload consolidates duplicate batches across multiple warehouse locators", () => {
+    const futureDate1 = new Date(Date.now() + 100 * 24 * 60 * 60 * 1000).toISOString();
+    const futureDate2 = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const payload = {
+      data: {
+        M_StorageOnHandGet: {
+          Results: [
+            {
+              UU: "loc-1",
+              QtyOnHand: 40,
+              M_Product: {
+                UU: "prod-multi-loc",
+                Name: "Paracetamol 500mg Tablets",
+                BH_SellPrice: 50,
+              },
+              M_AttributeSetInstance: {
+                UU: "asi-loc-1",
+                Lot: "BATCH-SHARED-LOT",
+                GuaranteeDate: futureDate1,
+                PurchasePrice: 30,
+              },
+            },
+            {
+              UU: "loc-2",
+              QtyOnHand: 60,
+              M_Product: {
+                UU: "prod-multi-loc",
+                Name: "Paracetamol 500mg Tablets",
+                BH_SellPrice: 50,
+              },
+              M_AttributeSetInstance: {
+                UU: "asi-loc-2",
+                Lot: "BATCH-SHARED-LOT",
+                GuaranteeDate: futureDate2,
+                PurchasePrice: 30,
+              },
+            },
+          ],
+        },
+      },
+    };
+
+    const products = BandaGoNormalizer.extractProductsFromPayload(payload);
+    expect(products).toHaveLength(1);
+    const prod = products[0];
+    expect(prod.stock).toBe(100);
+    // Should aggregate into a single batch entry with summed quantity and earliest expiry
+    expect(prod.batches).toHaveLength(1);
+    expect(prod.batches[0].batchNumber).toBe("BATCH-SHARED-LOT");
+    expect(prod.batches[0].qtyOnHand).toBe(100);
+    expect(prod.batches[0].expiryDate).toBe(new Date(futureDate2).toISOString());
+  });
 });
+

@@ -103,10 +103,13 @@ export class SphereSyncClient {
   /**
    * Enqueues normalized product items for sync and triggers an immediate queue flush.
    */
-  static async enqueue(items: SphereProductInput[]): Promise<number> {
+  static async enqueue(
+    items: SphereProductInput[],
+    trigger: string = "BACKGROUND_POLL",
+  ): Promise<number> {
     const count = await SyncQueueManager.enqueue(items);
     // Trigger immediate background flush (non-blocking)
-    this.flushQueue().catch((err) => {
+    this.flushQueue(trigger).catch((err) => {
       console.error("[SphereSyncClient] Background flush failed:", err);
     });
     return count;
@@ -117,7 +120,9 @@ export class SphereSyncClient {
    * Processes multiple batches (up to 10 batches / 500 items per flush)
    * so catalog updates drain efficiently.
    */
-  static async flushQueue(): Promise<FlushResult> {
+  static async flushQueue(
+    trigger: string = "BACKGROUND_POLL",
+  ): Promise<FlushResult> {
     if (this.isFlushing) {
       return { synced: 0, failed: 0 };
     }
@@ -184,6 +189,7 @@ export class SphereSyncClient {
             signal: controller.signal,
             body: JSON.stringify({
               source: "BANDAGO_POS",
+              trigger: trigger || "BACKGROUND_POLL",
               pharmacyId: config.pharmacyId,
               timestamp: new Date().toISOString(),
               items: coalescedItems,
