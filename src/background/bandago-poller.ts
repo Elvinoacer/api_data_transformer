@@ -26,7 +26,14 @@ export class BandaGoActivePoller {
           if (alarm.name === this.ALARM_NAME) {
             (async () => {
               try {
-                await this.pollActiveTabs();
+                const result = await this.pollActiveTabs();
+                // pollActiveTabs reports failures via its return value rather than
+                // throwing, so surface them here; otherwise scheduled polls fail silently.
+                if (result.success) {
+                  console.info(`[BandaGo Poller] ${result.message}`);
+                } else {
+                  console.warn(`[BandaGo Poller] Poll skipped/failed: ${result.message}`);
+                }
               } catch (err) {
                 console.warn(
                   "[BandaGo Poller] Scheduled poll execution failed:",
@@ -209,7 +216,9 @@ export class BandaGoActivePoller {
                 headers,
                 signal: controller.signal,
                 body: JSON.stringify({
-                  operationName: "SphereInventoryPoll",
+                  // Must match the operation name declared in `query` below,
+                  // otherwise GraphQL servers reject with "Unknown operation named ..."
+                  operationName: "AutoSyncInventory",
                   query,
                 }),
               });

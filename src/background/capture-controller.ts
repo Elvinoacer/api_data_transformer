@@ -84,6 +84,7 @@ class CaptureController {
   };
   private stopAutoPaginateRequested = false;
   private lastClearedAtBySession = new Map<string, number>();
+  private loggedNonBandaEndpoints = new Set<string>();
   private globalClearedAt = 0;
 
   public getStatus(): CaptureStatus {
@@ -623,7 +624,25 @@ class CaptureController {
       lowerUrl.includes("bandago") ||
       lowerUrl.includes("idempiere");
 
-    if (!isBandaCandidate) return;
+    if (!isBandaCandidate) {
+      // Silently dropping here made it look like sync "never tried". Log once per
+      // endpoint when a non-BandaGo response nevertheless looks like a product list.
+      try {
+        const endpointKey = sourceUrl.split("?")[0];
+        if (!this.loggedNonBandaEndpoints.has(endpointKey)) {
+          const lookalikes =
+            BandaGoNormalizer.extractProductsFromPayload(dataNode).length;
+          if (lookalikes > 0) {
+            this.loggedNonBandaEndpoints.add(endpointKey);
+            console.info(
+              `[BandaGo POS] Skipped Sphere sync for ${lookalikes} product-like records from ${endpointKey}: ` +
+                `only URLs containing /graphql, bandahealth, bandago or idempiere are synced.`,
+            );
+          }
+        }
+      } catch {}
+      return;
+    }
 
     try {
       const normalizedProducts =

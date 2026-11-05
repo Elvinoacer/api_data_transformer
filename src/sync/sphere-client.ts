@@ -124,7 +124,20 @@ export class SphereSyncClient {
 
     const config = await this.getConfig();
     if (!config.enabled || !config.endpointUrl || !config.apiKey) {
-      return { synced: 0, failed: 0 };
+      const missing = [
+        !config.enabled && "sync disabled",
+        !config.endpointUrl && "endpoint URL",
+        !config.apiKey && "API key",
+      ].filter(Boolean);
+      const hasPending = await SyncQueueManager.getPending(1)
+        .then((p) => p.length > 0)
+        .catch(() => false);
+      if (hasPending) {
+        console.warn(
+          `[SphereSyncClient] Queue flush skipped (${missing.join(", ")}). Items remain queued.`,
+        );
+      }
+      return { synced: 0, failed: 0, error: `Sync not configured: ${missing.join(", ")}` };
     }
 
     this.isFlushing = true;
