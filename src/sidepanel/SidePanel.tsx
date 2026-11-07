@@ -31,6 +31,12 @@ import {
 import { generateFlattenedCsv } from "../export/csv";
 import { generateExportFilename } from "../export/filenames";
 import {
+  SphereSyncClient,
+  SyncConfig,
+  SyncDiagnostics,
+} from "../sync/sphere-client";
+import { QueueStats } from "../sync/sync-queue";
+import {
   Play,
   Pause,
   Square,
@@ -44,6 +50,9 @@ import {
   Tag,
   Loader2,
   Eraser,
+  Radio,
+  AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 
 const SidePanelWorkspace: React.FC = () => {
@@ -70,16 +79,39 @@ const SidePanelWorkspace: React.FC = () => {
   const [walkMode, setWalkMode] = useState<AutoPaginateMode>("dom_click");
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [sphereConfig, setSphereConfig] = useState<SyncConfig | null>(null);
+  const [sphereQueue, setSphereQueue] = useState<QueueStats>({
+    pending: 0,
+    syncing: 0,
+    failed: 0,
+    total: 0,
+  });
+  const [sphereDiag, setSphereDiag] = useState<SyncDiagnostics | null>(null);
+  const [isSyncingNow, setIsSyncingNow] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [activeDb, allSessions, stateRes] = await Promise.all([
+      const [
+        activeDb,
+        allSessions,
+        stateRes,
+        cfg,
+        qStats,
+        diag,
+      ] = await Promise.all([
         sessionRepo.getActiveSession(),
         sessionRepo.getAllSessions(),
         sendExtensionMessage<undefined, CaptureStateResponse>(
           "GET_CAPTURE_STATE",
         ),
+        SphereSyncClient.getConfig(),
+        SphereSyncClient.getQueueStats(),
+        SphereSyncClient.getDiagnostics(),
       ]);
+
+      setSphereConfig(cfg);
+      setSphereQueue(qStats);
+      setSphereDiag(diag);
 
       const currentSession = activeDb || allSessions[0] || null;
       setSession(currentSession);
@@ -188,6 +220,38 @@ const SidePanelWorkspace: React.FC = () => {
 
   const handleOpenDashboard = async () => {
     await sendExtensionMessage("OPEN_DASHBOARD");
+  };
+
+  const handleQuickSphereSync = async () => {
+    setIsSyncingNow(true);
+    try {
+      if (sphereQueue.failed > 0) {
+        await SphereSyncClient.retryFailed();
+      }
+      await sendExtensionMessage("BANDAGO_TRIGGER_POLL");
+      const res = await SphereSyncClient.flushQueue();
+      await refresh();
+      if (res.error) {
+        notify({
+          title: "Sphere Sync Alert",
+          description: res.error,
+          variant: "error",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: "Sphere Sync Triggered",
+          description:
+            res.synced > 0
+              ? `Synced ${res.synced} medication(s) to Sphere Pharmacy.`
+              : "Polled BandaGo tab and checked sync queue.",
+          variant: "success",
+          actor: "user",
+        });
+      }
+    } finally {
+      setIsSyncingNow(false);
+    }
   };
 
   const handleQuickPaginate = async (sourceId?: string) => {
@@ -568,6 +632,86 @@ const SidePanelWorkspace: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Sphere Pharmacy Sync Health & Error Reporting Bar */}
+        {sphereConfig && (
+          <section className="bg-white p-3 rounded-2xl border border-emerald-200 shadow-xs space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                <Radio
+                  className="w-3.5 h-3.5 text-emerald-600"
+                  aria-hidden="true"
+                />
+                Sphere Pharmacy Sync
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  !sphereConfig.enabled
+                    ? "bg-stone-100 text-stone-600"
+                    : sphereDiag?.lastSyncError || sphereQueue.failed > 0
+                      ? "bg-rose-100 text-rose-800"
+                      : sphereQueue.syncing > 0 || sphereQueue.pending > 0
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-emerald-100 text-emerald-800"
+                }`}
+              >
+                {!sphereConfig.enabled
+                  ? "Disabled"
+                  : sphereDiag?.lastSyncError || sphereQueue.failed > 0
+                    ? `Error (${sphereQueue.failed} failed)`
+                    : sphereQueue.pending > 0
+                      ? `${sphereQueue.pending} Pending`
+                      : "Healthy"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-stone-600">
+              <span>
+                Last sync:{" "}
+                <strong className="text-stone-900">
+                  {sphereDiag?.lastSyncAt
+                    ? new Date(sphereDiag.lastSyncAt).toLocaleTimeString()
+                    : "None yet"}
+                </strong>
+              </span>
+              {sphereConfig.enabled && (
+                <button
+                  type="button"
+                  disabled={isSyncingNow}
+                  onClick={handleQuickSphereSync}
+                  className="inline-flex items-center gap-1 font-bold text-emerald-800 hover:underline disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`w-3 h-3 ${isSyncingNow ? "animate-spin" : ""}`}
+                    aria-hidden="true"
+                  />
+                  {sphereQueue.failed > 0 ? "Retry & Sync" : "Sync Now"}
+                </button>
+              )}
+            </div>
+
+            {(sphereDiag?.lastSyncError ||
+              (sphereDiag?.lastPollSuccess === false &&
+                sphereDiag?.lastPollMessage &&
+                !sphereDiag.lastPollMessage.includes("disabled"))) && (
+              <div
+                role="alert"
+                className="p-2 rounded-xl bg-rose-50 border border-rose-200 text-[10px] text-rose-800 space-y-0.5"
+              >
+                <div className="font-bold flex items-center gap-1">
+                  <AlertTriangle
+                    className="w-3 h-3 text-rose-600 flex-shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>Sync Attention Needed</span>
+                </div>
+                <p className="font-mono break-words">
+                  {sphereDiag?.lastSyncError || sphereDiag?.lastPollMessage}
+                </p>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Discovered Labeled API Datasets with Instant CSV Download */}
         {sources.length > 0 && (

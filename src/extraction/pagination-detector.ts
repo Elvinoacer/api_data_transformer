@@ -360,6 +360,14 @@ export function detectPaginationFromResponse(params: {
     strategy = "page";
   }
 
+  // If GET response body indicates page-based pagination without ?page= in URL, default to "page"
+  if (strategy === "page" && !pageParamName && !requestBody) {
+    pageParamName = "page";
+  }
+  if (strategy === "page" && currentPage === undefined) {
+    currentPage = 1;
+  }
+
   // Infer hasNextPage
   if (hasNextPage === undefined) {
     if (nextUrl) {
@@ -499,12 +507,27 @@ export function buildPageUrlsForSource(
 
   try {
     const baseUrl = new URL(pagination.sampleRequestUrl);
-    if (pagination.pageParamName) {
+    const paramName =
+      pagination.pageParamName ||
+      (pagination.strategy === "page" ? "page" : undefined);
+
+    if (paramName) {
       const missing = getMissingPages(pagination);
       if (missing.length > 0) {
         for (const p of missing.slice(0, maxPagesToGenerate)) {
           const u = new URL(baseUrl.toString());
-          u.searchParams.set(pagination.pageParamName, String(p));
+          u.searchParams.set(paramName, String(p));
+          urls.push(u.toString());
+        }
+        return urls;
+      }
+
+      // If totalPages is known and all pages were already seen, re-fetch 1..totalPages
+      if (pagination.totalPages && pagination.totalPages > 1) {
+        const cap = Math.min(pagination.totalPages, maxPagesToGenerate);
+        for (let p = 1; p <= cap; p++) {
+          const u = new URL(baseUrl.toString());
+          u.searchParams.set(paramName, String(p));
           urls.push(u.toString());
         }
         return urls;
@@ -517,7 +540,7 @@ export function buildPageUrlsForSource(
           : 1;
       for (let i = 1; i <= maxPagesToGenerate; i++) {
         const u = new URL(baseUrl.toString());
-        u.searchParams.set(pagination.pageParamName, String(maxSeen + i));
+        u.searchParams.set(paramName, String(maxSeen + i));
         urls.push(u.toString());
       }
       return urls;

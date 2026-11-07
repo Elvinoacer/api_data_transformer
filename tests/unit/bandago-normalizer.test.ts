@@ -605,5 +605,281 @@ describe("BandaGoNormalizer (FEFO & PPB Regulations)", () => {
     expect(prod.batches[0].qtyOnHand).toBe(100);
     expect(prod.batches[0].expiryDate).toBe(new Date(futureDate2).toISOString());
   });
+
+  describe("Remediation Fixes (Collision Prevention & Scheduling)", () => {
+    it("prevents BP (British Pharmacopoeia) from colliding with heart-health", () => {
+      const paracetamolBp = BandaGoNormalizer.normalize({
+        id: "para-bp-1",
+        name: "Paracetamol 500mg Tablets BP",
+        bh_sellprice: 50,
+        quantityOnHand: 100,
+      });
+
+      expect(paracetamolBp).not.toBeNull();
+      expect(paracetamolBp?.categorySlug).toBe("otc");
+      expect(paracetamolBp?.requiresPrescription).toBe(false);
+
+      const calamineBp = BandaGoNormalizer.normalize({
+        id: "calamine-bp-1",
+        name: "Calamine Lotion BP 100ml",
+        bh_sellprice: 150,
+        quantityOnHand: 20,
+      });
+
+      expect(calamineBp).not.toBeNull();
+      expect(calamineBp?.categorySlug).not.toBe("heart-health");
+      expect(calamineBp?.requiresPrescription).toBe(false);
+    });
+
+    it("prevents Fluconazole, Fluoxetine, Fluticasone, and Flucloxacillin from colliding with cold-flu", () => {
+      const fluMeds = [
+        "Fluconazole 150mg Capsule",
+        "Fluoxetine 20mg Capsules",
+        "Fluticasone Propionate Nasal Spray",
+        "Flucloxacillin 500mg Capsules",
+      ];
+
+      for (const med of fluMeds) {
+        const normalized = BandaGoNormalizer.normalize({
+          id: `flu-med-${med.slice(0, 4)}`,
+          name: med,
+          bh_sellprice: 200,
+          quantityOnHand: 25,
+        });
+
+        expect(normalized).not.toBeNull();
+        expect(normalized?.categorySlug).not.toBe("cold-flu");
+        expect(normalized?.requiresPrescription).toBe(true);
+      }
+    });
+
+    it("prevents Testosterone from colliding with OTC diagnostics", () => {
+      const testosterone = BandaGoNormalizer.normalize({
+        id: "testo-depot-1",
+        name: "Testosterone Enanthate 250mg/ml Injection",
+        bh_sellprice: 1800,
+        quantityOnHand: 10,
+      });
+
+      expect(testosterone).not.toBeNull();
+      expect(testosterone?.categorySlug).not.toBe("diagnostics");
+      expect(testosterone?.requiresPrescription).toBe(true);
+
+      // Explicit test strip remains diagnostics
+      const testStrip = BandaGoNormalizer.normalize({
+        id: "strip-1",
+        name: "Accu-Chek Blood Glucose Test Strip 50s",
+        bh_sellprice: 2500,
+        quantityOnHand: 15,
+        m_product_category: { name: "Test Strip" },
+      });
+      expect(testStrip?.categorySlug).toBe("diagnostics");
+      expect(testStrip?.requiresPrescription).toBe(false);
+    });
+
+    it("schedules expanded POM medications under Kenya PPB regulations", () => {
+      const pomList = [
+        "Cefuroxime Axetil 500mg Tablets",
+        "Levofloxacin 500mg Tablets",
+        "Clindamycin 300mg Capsules",
+        "Pregabalin 75mg Capsules",
+        "Gabapentin 300mg",
+        "Furosemide 40mg Tablets",
+        "Spironolactone 25mg",
+        "Carvedilol 6.25mg Tablets",
+        "Montelukast Sodium 10mg Tablets",
+        "Carbimazole 5mg Tablets",
+      ];
+
+      for (const med of pomList) {
+        expect(RX_SCHEDULE_REGEX.test(med)).toBe(true);
+        const normalized = BandaGoNormalizer.normalize({
+          id: `pom-${med.slice(0, 5)}`,
+          name: med,
+          bh_sellprice: 100,
+          quantityOnHand: 10,
+        });
+        expect(normalized?.requiresPrescription).toBe(true);
+      }
+    });
+
+    it("prioritizes explicit rawCategory over name keywords using word boundaries", () => {
+      const product = BandaGoNormalizer.normalize({
+        id: "prio-1",
+        name: "Pain Relief Cold Cream",
+        m_product_category: { name: "Skincare Dermatology" },
+        bh_sellprice: 300,
+        quantityOnHand: 12,
+      });
+
+      expect(product?.categorySlug).toBe("skin-care");
+    });
+
+    it("safely handles undefined imageUrl on incoming product during mergeProducts", () => {
+      const existing = {
+        externalPosId: "safe-img-1",
+        name: "Amoxicillin 500mg",
+        sku: "SKU-AMX",
+        genericName: "Amoxicillin",
+        dosageForm: "capsule",
+        slug: "amoxicillin-500mg-safe-i",
+        categorySlug: "prescription",
+        price: 300,
+        buyPrice: 200,
+        costPrice: 200,
+        stock: 10,
+        inStock: true,
+        requiresPrescription: true,
+        imageUrl: "/images/categories/cat-prescription.webp",
+        nearestExpiryDate: null,
+        batches: [],
+      };
+
+      const incomingWithoutImage: any = {
+        externalPosId: "safe-img-1",
+        name: "Amoxicillin 500mg Capsules",
+        categorySlug: "prescription",
+        price: 350,
+        stock: 10,
+        inStock: true,
+        requiresPrescription: true,
+        batches: [],
+        // imageUrl is deliberately missing/undefined
+      };
+
+      expect(() =>
+        BandaGoNormalizer.mergeProducts(existing, incomingWithoutImage),
+      ).not.toThrow();
+
+      const merged = BandaGoNormalizer.mergeProducts(
+        existing,
+        incomingWithoutImage,
+      );
+      expect(merged.imageUrl).toBe("/images/categories/cat-prescription.webp");
+    });
+
+    it("correctly resolves expanded clinical category keys from rawCategory and name", () => {
+      const testCases = [
+        {
+          raw: {
+            id: "cat-antifungal-1",
+            name: "Clotrimazole Topical Antifungal",
+            bh_sellprice: 150,
+            quantityOnHand: 20,
+          },
+          expectedSlug: "prescription",
+          expectedRx: true,
+        },
+        {
+          raw: {
+            id: "cat-antihistamine-1",
+            name: "Cetirizine 10mg Antihistamine",
+            bh_sellprice: 100,
+            quantityOnHand: 50,
+          },
+          expectedSlug: "allergy",
+          expectedRx: false,
+        },
+        {
+          raw: {
+            id: "cat-rapid-1",
+            name: "Rapid Diagnostic Strip",
+            bh_sellprice: 500,
+            quantityOnHand: 10,
+          },
+          expectedSlug: "diagnostics",
+          expectedRx: false,
+        },
+        {
+          raw: {
+            id: "cat-wound-1",
+            name: "Surgical Sterile Wound Dressing",
+            bh_sellprice: 250,
+            quantityOnHand: 15,
+          },
+          expectedSlug: "first-aid",
+          expectedRx: false,
+        },
+      ];
+
+      for (const tc of testCases) {
+        const normalized = BandaGoNormalizer.normalize(tc.raw);
+        expect(normalized).not.toBeNull();
+        expect(normalized?.categorySlug).toBe(tc.expectedSlug);
+        expect(normalized?.requiresPrescription).toBe(tc.expectedRx);
+      }
+    });
+
+    it("handles iDempiere CHAR(1) IsActive='N' and IsStocked='N' flags and prevents unbatched TotalQuantity from resurrecting expired storage lots", () => {
+      // 1. IsActive = 'N' sets stock to 0 and inStock to false
+      const inactiveChar = BandaGoNormalizer.normalize({
+        UU: "prod-inactive-char",
+        Name: "Discontinued Syrup 100ml",
+        IsActive: "N",
+        BH_SellPrice: 200,
+        TotalQuantity: 40,
+      });
+      expect(inactiveChar).not.toBeNull();
+      expect(inactiveChar?.stock).toBe(0);
+      expect(inactiveChar?.inStock).toBe(false);
+
+      // 2. IsStocked = 'N' or false is rejected by isProductRecord (non-stocked clinical service)
+      expect(
+        BandaGoNormalizer.isProductRecord({
+          UU: "srv-1",
+          Name: "Doctor Consultation",
+          IsStocked: "N",
+          BH_SellPrice: 1000,
+        }),
+      ).toBe(false);
+      expect(
+        BandaGoNormalizer.isProductRecord({
+          UU: "srv-2",
+          Name: "Lab Blood Sugar Test",
+          IsStocked: false,
+          BH_SellPrice: 300,
+        }),
+      ).toBe(false);
+
+      // 3. Expired physical storage batches must not be resurrected by subsequent unbatched M_ProductGet TotalQuantity
+      const pastDate = new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000,
+      ).toISOString();
+      const expiredStorageProduct = BandaGoNormalizer.normalize({
+        UU: "prod-exp-guard",
+        Name: "Augmentin 625mg Tablets",
+        BH_SellPrice: 1200,
+        M_StorageOnHandList: [
+          {
+            QtyOnHand: 25,
+            M_AttributeSetInstance: {
+              Lot: "LOT-EXPIRED-99",
+              GuaranteeDate: pastDate,
+            },
+          },
+        ],
+      });
+      expect(expiredStorageProduct?.stock).toBe(0);
+      expect(expiredStorageProduct?.batches).toHaveLength(0);
+
+      const unbatchedCatalogProduct = BandaGoNormalizer.normalize({
+        UU: "prod-exp-guard",
+        Name: "Augmentin 625mg Tablets",
+        Value: "AUG-625",
+        BH_SellPrice: 1200,
+        TotalQuantity: 25, // Includes the 25 expired units in iDempiere catalog summary
+      });
+      expect(unbatchedCatalogProduct?.stock).toBe(25);
+
+      // Merging existing expired storage product with incoming unbatched catalog product must keep stock = 0
+      const merged = BandaGoNormalizer.mergeProducts(
+        expiredStorageProduct!,
+        unbatchedCatalogProduct!,
+      );
+      expect(merged.stock).toBe(0);
+      expect(merged.inStock).toBe(false);
+      expect(merged.sku).toBe("AUG-625");
+    });
+  });
 });
 

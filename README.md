@@ -181,3 +181,13 @@ Tests cover:
 - Schema inference and primitive type conflict detection.
 - Path selector with candidate ranking.
 - URL query parameter redaction and endpoint normalization.
+
+To re-compile and update PROJECT_CODEBASE.md in one command:
+
+    npm run update:codebase
+    # or directly:
+    python3 scripts/bundle_codebase.py
+
+To unpack/restore workspace files from PROJECT_CODEBASE.md:
+
+    python3 scripts/bundle_codebase.py --unpack

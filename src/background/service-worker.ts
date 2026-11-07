@@ -255,6 +255,18 @@ chrome.runtime.onMessage.addListener(
             break;
           }
 
+          case "SPHERE_GET_DIAGNOSTICS": {
+            const diagnostics = await SphereSyncClient.getDiagnostics();
+            sendResponse({ success: true, data: diagnostics });
+            break;
+          }
+
+          case "SPHERE_CLEAR_ERRORS": {
+            await SphereSyncClient.clearErrorHistory();
+            sendResponse({ success: true });
+            break;
+          }
+
           case "BANDAGO_TRIGGER_POLL": {
             const pollResult = await BandaGoActivePoller.triggerManualPoll();
             sendResponse({ success: true, data: pollResult });

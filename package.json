@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bundle:codebase": "python3 scripts/bundle_codebase.py",
+    "update:codebase": "python3 scripts/bundle_codebase.py"
   },
   "dependencies": {
     "dexie": "^4.0.11",

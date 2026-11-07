@@ -51,14 +51,20 @@ export const PaginationAssistantModal: React.FC<Props> = ({
   const [customSelector, setCustomSelector] = useState<string>("");
 
   useEffect(() => {
-    if (initialSourceId) {
+    if (initialSourceId && sources.some((s) => s.id === initialSourceId)) {
       setSelectedSourceId(initialSourceId);
-    } else if (!selectedSourceId && sources.length > 0) {
+    } else if (
+      sources.length > 0 &&
+      !sources.some((s) => s.id === selectedSourceId)
+    ) {
       setSelectedSourceId(sources[0].id);
+    } else if (sources.length === 0 && selectedSourceId !== "") {
+      setSelectedSourceId("");
     }
   }, [initialSourceId, sources, selectedSourceId]);
 
-  const selectedSource = sources.find((s) => s.id === selectedSourceId);
+  const selectedSource =
+    sources.find((s) => s.id === selectedSourceId) || sources[0];
   const pag = selectedSource?.pagination;
   const missingPages = getMissingPages(pag);
   const isRunning =
@@ -66,7 +72,7 @@ export const PaginationAssistantModal: React.FC<Props> = ({
     autoPaginateState?.status === "stopping";
   const canUseApiFetch = Boolean(
     pag &&
-    (pag.pageParamName || pag.nextUrl) &&
+    (pag.pageParamName || pag.nextUrl || pag.strategy === "page") &&
     selectedSource?.httpMethod === "GET",
   );
 
@@ -83,7 +89,7 @@ export const PaginationAssistantModal: React.FC<Props> = ({
     if (!sessionId) return;
     await onStartAutoPaginate({
       sessionId,
-      sourceId: selectedSourceId || undefined,
+      sourceId: selectedSource?.id || selectedSourceId || undefined,
       mode,
       delayMs: Math.round(delaySeconds * 1000),
       maxPages,

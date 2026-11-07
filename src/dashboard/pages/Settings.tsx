@@ -26,7 +26,11 @@ import {
 import { DEFAULT_SETTINGS } from "../../shared/constants";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
-import { SphereSyncClient, SyncConfig } from "../../sync/sphere-client";
+import {
+  SphereSyncClient,
+  SyncConfig,
+  SyncDiagnostics,
+} from "../../sync/sphere-client";
 import {
   ClearAllDataPayload,
   ClearTabDataPayload,
@@ -81,11 +85,25 @@ export const Settings: React.FC<Props> = ({
   } | null>(null);
   const [flushingQueue, setFlushingQueue] = useState(false);
   const [pollingBandaGo, setPollingBandaGo] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<SyncDiagnostics>({
+    lastSyncAt: null,
+    lastSyncError: null,
+    lastPollAt: null,
+    lastPollSuccess: null,
+    lastPollMessage: null,
+    lastPollCount: 0,
+    errorHistory: [],
+    failedItems: [],
+  });
 
   const refreshQueueStats = useCallback(async () => {
     try {
-      const stats = await SphereSyncClient.getQueueStats();
+      const [stats, diag] = await Promise.all([
+        SphereSyncClient.getQueueStats(),
+        SphereSyncClient.getDiagnostics(),
+      ]);
       setQueueStats(stats);
+      setDiagnostics(diag);
     } catch {
       // Ignore background error
     }
@@ -231,6 +249,17 @@ export const Settings: React.FC<Props> = ({
     notify({
       title: "Failed Items Queued",
       description: `Reset ${count} items back to pending status.`,
+      variant: "info",
+      actor: "user",
+    });
+  };
+
+  const handleClearErrorHistory = async () => {
+    await SphereSyncClient.clearErrorHistory();
+    await refreshQueueStats();
+    notify({
+      title: "Error Log Cleared",
+      description: "Cleared Sphere sync error history.",
       variant: "info",
       actor: "user",
     });
@@ -757,6 +786,175 @@ export const Settings: React.FC<Props> = ({
               </span>
             </div>
           </div>
+
+          {/* Sync & Poll Telemetry Bar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
+            <div className="bg-white px-3 py-2 rounded-lg border border-stone-200 flex items-center justify-between">
+              <span className="text-stone-500 font-medium">
+                Last Successful Sync:
+              </span>
+              <span className="font-mono font-semibold text-stone-800">
+                {diagnostics.lastSyncAt
+                  ? new Date(diagnostics.lastSyncAt).toLocaleString()
+                  : "No sync completed yet"}
+              </span>
+            </div>
+            <div className="bg-white px-3 py-2 rounded-lg border border-stone-200 flex items-center justify-between gap-2">
+              <span className="text-stone-500 font-medium flex-shrink-0">
+                Last BandaGo Poll:
+              </span>
+              <span
+                className={`font-mono font-semibold truncate ${
+                  diagnostics.lastPollSuccess === false
+                    ? "text-amber-700"
+                    : "text-stone-800"
+                }`}
+                title={diagnostics.lastPollMessage || ""}
+              >
+                {diagnostics.lastPollAt
+                  ? `${new Date(diagnostics.lastPollAt).toLocaleTimeString()} (${
+                      diagnostics.lastPollSuccess
+                        ? `${diagnostics.lastPollCount} items`
+                        : "attention"
+                    })`
+                  : "Awaiting first poll"}
+              </span>
+            </div>
+          </div>
+
+          {/* Active Sync or Poller Error Alert Banner */}
+          {(diagnostics.lastSyncError ||
+            (diagnostics.lastPollSuccess === false &&
+              diagnostics.lastPollMessage &&
+              !diagnostics.lastPollMessage.includes("disabled"))) && (
+            <div
+              role="alert"
+              className="p-3 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs space-y-1.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold flex items-center gap-1.5 text-rose-800">
+                  <AlertTriangle
+                    className="w-4 h-4 text-rose-600 flex-shrink-0"
+                    aria-hidden="true"
+                  />
+                  Synchronization Error Detected
+                </span>
+                <button
+                  type="button"
+                  onClick={handleClearErrorHistory}
+                  className="text-[11px] font-semibold text-rose-700 hover:underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+              {diagnostics.lastSyncError && (
+                <p className="font-mono text-[11px] text-rose-800 break-words">
+                  <strong>Sphere API:</strong> {diagnostics.lastSyncError}
+                </p>
+              )}
+              {diagnostics.lastPollSuccess === false &&
+                diagnostics.lastPollMessage && (
+                  <p className="font-mono text-[11px] text-rose-800 break-words">
+                    <strong>BandaGo Poller:</strong>{" "}
+                    {diagnostics.lastPollMessage}
+                  </p>
+                )}
+              <p className="text-[11px] text-rose-700">
+                <strong>Troubleshooting:</strong> Verify that your Sphere
+                Ingestion Endpoint URL and{" "}
+                <code className="font-mono">BANDAGO_SYNC_API_KEY</code> match
+                your Sphere Pharmacy server, and keep an authenticated{" "}
+                <code className="font-mono">go.bandahealth.org</code> tab open.
+                Queued items remain safely stored in IndexedDB and will retry
+                automatically.
+              </p>
+            </div>
+          )}
+
+          {/* Per-Medication Failed / Retrying Queue Items Inspector */}
+          {diagnostics.failedItems.length > 0 && (
+            <div className="pt-1 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] font-bold text-rose-800">
+                <span>
+                  Medications With Sync Errors ({diagnostics.failedItems.length}
+                  )
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRetryFailedItems}
+                  className="text-rose-700 hover:underline"
+                >
+                  Retry All Now
+                </button>
+              </div>
+              <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                {diagnostics.failedItems.map((item) => (
+                  <div
+                    key={item.id ?? item.externalPosId}
+                    className="bg-white p-2 rounded-lg border border-rose-200 text-[11px] flex flex-col gap-0.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-stone-900 truncate">
+                        {item.name}{" "}
+                        <span className="font-mono font-normal text-stone-500">
+                          ({item.externalPosId.slice(0, 10)})
+                        </span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-mono text-[10px] font-bold flex-shrink-0">
+                        {item.status} · Retry {item.retryCount}/5
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] text-rose-700 break-words">
+                      {item.lastError}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Rolling Error History Log */}
+          {diagnostics.errorHistory.length > 0 && (
+            <details className="pt-1 text-xs">
+              <summary className="cursor-pointer text-[11px] font-bold text-stone-600 hover:text-stone-900 flex items-center justify-between">
+                <span>
+                  Recent Sync & Poller Error Log (
+                  {diagnostics.errorHistory.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleClearErrorHistory();
+                  }}
+                  className="text-[10px] text-stone-500 hover:text-rose-700 font-semibold"
+                >
+                  Clear Log
+                </button>
+              </summary>
+              <div className="mt-1.5 max-h-40 overflow-y-auto space-y-1 pr-1">
+                {diagnostics.errorHistory.map((err) => (
+                  <div
+                    key={err.id}
+                    className="bg-white px-2.5 py-1.5 rounded-lg border border-stone-200 text-[10px] font-mono flex flex-col gap-0.5"
+                  >
+                    <div className="flex items-center justify-between text-stone-500">
+                      <span className="font-bold text-rose-700">
+                        [{err.source}]{" "}
+                        {err.productName ? `${err.productName}` : ""}
+                      </span>
+                      <span>
+                        {new Date(err.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <span className="text-stone-800 break-words">
+                      {err.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       </div>
 

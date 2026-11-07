@@ -28,6 +28,7 @@ import { inferSchemaFromRecords } from "../extraction/schema-inference";
 import {
   buildPageUrlsForSource,
   detectPaginationFromResponse,
+  mergePaginationState,
 } from "../extraction/pagination-detector";
 import {
   AutoPaginateConfig,
@@ -39,6 +40,7 @@ import {
 } from "../shared/types";
 import { BandaGoNormalizer } from "../extraction/bandago-normalizer";
 import { SphereSyncClient } from "../sync/sphere-client";
+import { BandaGoActivePoller } from "./bandago-poller";
 
 interface TrackedRequestMeta {
   httpMethod: string;
@@ -85,6 +87,7 @@ class CaptureController {
   private stopAutoPaginateRequested = false;
   private lastClearedAtBySession = new Map<string, number>();
   private loggedNonBandaEndpoints = new Set<string>();
+  private mutationPollTimer: ReturnType<typeof setTimeout> | null = null;
   private globalClearedAt = 0;
 
   public getStatus(): CaptureStatus {
@@ -534,7 +537,12 @@ class CaptureController {
     }
 
     for (const [idx, envelope] of envelopes.entries()) {
-      await this.handleBandaGoPayload(pending.url, pending.postData, envelope);
+      await this.handleBandaGoPayload(
+        pending.url,
+        pending.postData,
+        envelope,
+        "CDP_INTERCEPT",
+      );
 
       let envelopeOpName = operationName;
       let envelopePostData = pending.postData;
@@ -614,6 +622,7 @@ class CaptureController {
     sourceUrl: string,
     _postData: string | undefined,
     dataNode: unknown,
+    trigger?: string,
   ): Promise<void> {
     if (!dataNode || typeof dataNode !== "object") return;
 
@@ -652,7 +661,11 @@ class CaptureController {
         console.log(
           `[BandaGo POS] Intercepted ${normalizedProducts.length} medications from ${sourceUrl}. Queueing Sphere sync...`,
         );
-        await SphereSyncClient.enqueue(normalizedProducts);
+        if (trigger) {
+          await SphereSyncClient.enqueue(normalizedProducts, trigger);
+        } else {
+          await SphereSyncClient.enqueue(normalizedProducts);
+        }
 
         if (this.currentSession) {
           await activityRepo.logEvent({
@@ -662,9 +675,35 @@ class CaptureController {
             message: `[BandaGo POS] Intercepted ${normalizedProducts.length} medications. Queued for Sphere Pharmacy sync.`,
           });
         }
+      } else if (
+        _postData &&
+        /\bmutation\b/i.test(_postData) &&
+        /(C_Order|M_InOut|M_Inventory|M_Movement|Process|Complete|Save|Bill|Dispense|Receive)/i.test(
+          _postData,
+        )
+      ) {
+        // When a counter sale (C_Order), stock receipt (M_InOut), or physical adjustment (M_Inventory)
+        // GraphQL mutation completes without returning full M_StorageOnHand rows in the mutation response,
+        // trigger a debounced active tab poll 1.5s later so Sphere Pharmacy receives updated stock immediately.
+        if (this.mutationPollTimer) {
+          clearTimeout(this.mutationPollTimer);
+        }
+        this.mutationPollTimer = setTimeout(() => {
+          this.mutationPollTimer = null;
+          BandaGoActivePoller.pollActiveTabs().catch((pollErr) => {
+            console.warn(
+              "[BandaGo POS] Post-mutation stock refresh poll failed:",
+              pollErr,
+            );
+          });
+        }, 1500);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("[BandaGo POS] Error handling payload sync:", err);
+      await SphereSyncClient.recordError({
+        source: "SYNC_FLUSH",
+        message: `Payload extraction error: ${err?.message || "Unknown error"}`,
+      }).catch(() => {});
     }
   }
 
@@ -713,8 +752,6 @@ class CaptureController {
       paginationMeta.totalRecords !== undefined ||
       paginationMeta.totalPages !== undefined
     ) {
-      const { mergePaginationState } =
-        await import("../extraction/pagination-detector");
       const mergedPag = mergePaginationState(
         source.pagination,
         paginationMeta,
@@ -873,6 +910,15 @@ class CaptureController {
     return this.getAutoPaginateState();
   }
 
+  private async waitForPendingRequests(maxWaitMs = 3000): Promise<void> {
+    const start = Date.now();
+    while (this.pendingRequests.size > 0 && Date.now() - start < maxWaitMs) {
+      await sleep(150);
+    }
+    // Brief extra buffer for IndexedDB write completion
+    await sleep(150);
+  }
+
   private async runAutoPaginateLoop(
     tabId: number,
     sessionId: string,
@@ -882,20 +928,50 @@ class CaptureController {
   ): Promise<void> {
     let stalledSteps = 0;
 
-    if (config.mode === "api_fetch" && config.sourceId) {
-      const initialSource = await sourceRepo.getSource(config.sourceId);
-      if (!initialSource?.pagination) {
-        throw new Error(
-          "Selected API source does not have URL pagination metadata yet. Try Auto-Click Next Page mode.",
-        );
+    // 1. Auto-bootstrap: if no API sources have been captured yet in this session,
+    // reload the target tab so Page 1 is captured before stepping through pages.
+    let sessionSources = await sourceRepo.getSourcesBySession(sessionId);
+    if (sessionSources.length === 0 && !this.stopAutoPaginateRequested) {
+      this.autoPaginateState = {
+        ...this.autoPaginateState,
+        message: "Reloading target tab to capture initial API page...",
+        updatedAt: new Date().toISOString(),
+      };
+      try {
+        await chrome.tabs.reload(tabId);
+      } catch {
+        // Fallback if chrome.tabs.reload is unavailable
       }
+      const bootStart = Date.now();
+      while (Date.now() - bootStart < 4000 && !this.stopAutoPaginateRequested) {
+        await sleep(300);
+        await this.waitForPendingRequests(1500);
+        sessionSources = await sourceRepo.getSourcesBySession(sessionId);
+        if (sessionSources.length > 0) break;
+      }
+      const postBootMetrics = await calculateSessionMetrics(sessionId);
+      this.autoPaginateState = {
+        ...this.autoPaginateState,
+        currentUniqueRecords: postBootMetrics.uniqueRecords,
+        updatedAt: new Date().toISOString(),
+      };
+    }
 
-      const prebuiltUrls = buildPageUrlsForSource(
-        initialSource.pagination,
-        maxPages,
-      );
+    // Resolve target source (explicitly selected or primary paginated GET source)
+    const resolvedSourceId =
+      (config.sourceId &&
+        sessionSources.find((s) => s.id === config.sourceId)?.id) ||
+      sessionSources.find((s) => s.pagination && s.pagination.totalPages && s.pagination.totalPages > 1)?.id ||
+      sessionSources[0]?.id;
+
+    const runDirectUrlFetch = async (sourceId: string): Promise<boolean> => {
+      const src = await sourceRepo.getSource(sourceId);
+      if (!src?.pagination) return false;
+
+      const prebuiltUrls = buildPageUrlsForSource(src.pagination, maxPages);
+      if (prebuiltUrls.length === 0 && !src.pagination.nextUrl) return false;
+
       let step = 0;
-
       while (step < maxPages && !this.stopAutoPaginateRequested) {
         if (
           !this.currentSession ||
@@ -905,10 +981,9 @@ class CaptureController {
           break;
         }
 
-        // Determine URL to fetch: either prebuilt page URL or dynamically updated `nextUrl`
         let targetUrl = prebuiltUrls[step];
         if (!targetUrl) {
-          const refreshedSource = await sourceRepo.getSource(config.sourceId);
+          const refreshedSource = await sourceRepo.getSource(sourceId);
           if (
             refreshedSource?.pagination?.hasNextPage &&
             refreshedSource.pagination.nextUrl
@@ -929,6 +1004,7 @@ class CaptureController {
 
         const fetchRes = await cdpAdapter.fetchUrlInTab(tabId, targetUrl);
         await sleep(Math.max(400, delayMs));
+        await this.waitForPendingRequests();
 
         const latestMetrics = await calculateSessionMetrics(sessionId);
         this.autoPaginateState = {
@@ -942,10 +1018,30 @@ class CaptureController {
           break;
         }
 
-        // If we exhausted prebuilt missing pages, check if all known pages are complete
         if (prebuiltUrls.length > 0 && step >= prebuiltUrls.length) {
+          this.autoPaginateState = {
+            ...this.autoPaginateState,
+            status: "completed",
+            message: `Fetched all ${prebuiltUrls.length} remaining page(s) for "${src.label}"!`,
+            updatedAt: new Date().toISOString(),
+          };
           break;
         }
+      }
+      return step > 0;
+    };
+
+    if (config.mode === "api_fetch") {
+      if (!resolvedSourceId) {
+        throw new Error(
+          "No API dataset discovered yet. Refresh the target tab once while recording, then click Fetch Pages.",
+        );
+      }
+      const ran = await runDirectUrlFetch(resolvedSourceId);
+      if (!ran) {
+        throw new Error(
+          "Selected API source does not have URL pagination metadata yet. Try Auto-Click Next Page mode.",
+        );
       }
     } else {
       // DOM Click or Infinite Scroll loop
@@ -974,6 +1070,12 @@ class CaptureController {
             config.customSelector,
           );
           if (!clickRes.clicked) {
+            // If DOM Next button is disabled (e.g. tab was already on final page)
+            // but our source still has missing URL pages, fetch them directly!
+            if (resolvedSourceId) {
+              const fallbackRan = await runDirectUrlFetch(resolvedSourceId);
+              if (fallbackRan) break;
+            }
             this.autoPaginateState = {
               ...this.autoPaginateState,
               status: "completed",
@@ -1004,11 +1106,9 @@ class CaptureController {
           }
         }
 
-        // Wait user-configured interval + brief buffer if requests are still inflight
+        // Wait user-configured interval + any in-flight network bodies
         await sleep(delayMs);
-        if (this.pendingRequests.size > 0) {
-          await sleep(800);
-        }
+        await this.waitForPendingRequests();
 
         const afterMetrics = await calculateSessionMetrics(sessionId);
         this.autoPaginateState = {
@@ -1017,12 +1117,11 @@ class CaptureController {
           updatedAt: new Date().toISOString(),
         };
 
-        // Check if target source reports no more pages
-        if (config.sourceId) {
-          const updatedSource = await sourceRepo.getSource(config.sourceId);
+        // Check if target source reports all pages collected
+        if (resolvedSourceId) {
+          const updatedSource = await sourceRepo.getSource(resolvedSourceId);
           if (
             updatedSource?.pagination &&
-            updatedSource.pagination.hasNextPage === false &&
             updatedSource.pagination.totalPages &&
             updatedSource.pagination.observedPages.length >=
               updatedSource.pagination.totalPages
@@ -1042,6 +1141,11 @@ class CaptureController {
         ) {
           stalledSteps++;
           if (stalledSteps >= 2) {
+            // Try direct URL fetch for any remaining missing pages before giving up
+            if (resolvedSourceId) {
+              const fallbackRan = await runDirectUrlFetch(resolvedSourceId);
+              if (fallbackRan) break;
+            }
             this.autoPaginateState = {
               ...this.autoPaginateState,
               status: "completed",

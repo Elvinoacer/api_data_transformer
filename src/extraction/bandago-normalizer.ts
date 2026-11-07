@@ -31,6 +31,7 @@ export interface SphereProductSyncItem {
   strength?: string;
   description?: string;
   packSize?: string;
+  _allLotsExpired?: boolean;
 }
 
 export type SphereProductInput = SphereProductSyncItem;
@@ -72,12 +73,32 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-diabetes.webp",
     rx: true,
   },
+  antidiabetic: {
+    slug: "diabetes",
+    defaultImage: "/images/categories/cat-diabetes.webp",
+    rx: true,
+  },
+  insulin: {
+    slug: "diabetes",
+    defaultImage: "/images/categories/cat-diabetes.webp",
+    rx: true,
+  },
   diagnostic: {
     slug: "diagnostics",
     defaultImage: "/images/categories/cat-diagnostics.webp",
     rx: false,
   },
-  test: {
+  rapid: {
+    slug: "diagnostics",
+    defaultImage: "/images/categories/cat-diagnostics.webp",
+    rx: false,
+  },
+  "test strip": {
+    slug: "diagnostics",
+    defaultImage: "/images/categories/cat-diagnostics.webp",
+    rx: false,
+  },
+  "test kit": {
     slug: "diagnostics",
     defaultImage: "/images/categories/cat-diagnostics.webp",
     rx: false,
@@ -92,7 +113,27 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-first-aid.webp",
     rx: false,
   },
+  surgical: {
+    slug: "first-aid",
+    defaultImage: "/images/categories/cat-first-aid.webp",
+    rx: false,
+  },
+  wound: {
+    slug: "first-aid",
+    defaultImage: "/images/categories/cat-first-aid.webp",
+    rx: false,
+  },
+  dressing: {
+    slug: "first-aid",
+    defaultImage: "/images/categories/cat-first-aid.webp",
+    rx: false,
+  },
   gastro: {
+    slug: "gastro",
+    defaultImage: "/images/categories/cat-gastro.webp",
+    rx: false,
+  },
+  digestive: {
     slug: "gastro",
     defaultImage: "/images/categories/cat-gastro.webp",
     rx: false,
@@ -107,6 +148,16 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-gastro.webp",
     rx: false,
   },
+  ulcer: {
+    slug: "gastro",
+    defaultImage: "/images/categories/cat-gastro.webp",
+    rx: false,
+  },
+  laxative: {
+    slug: "gastro",
+    defaultImage: "/images/categories/cat-gastro.webp",
+    rx: false,
+  },
   heart: {
     slug: "heart-health",
     defaultImage: "/images/categories/cat-heart-health.webp",
@@ -117,17 +168,37 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-heart-health.webp",
     rx: true,
   },
+  antihypertensive: {
+    slug: "heart-health",
+    defaultImage: "/images/categories/cat-heart-health.webp",
+    rx: true,
+  },
+  "blood pressure": {
+    slug: "heart-health",
+    defaultImage: "/images/categories/cat-heart-health.webp",
+    rx: true,
+  },
+  cardiovascular: {
+    slug: "heart-health",
+    defaultImage: "/images/categories/cat-heart-health.webp",
+    rx: true,
+  },
+  cardiac: {
+    slug: "heart-health",
+    defaultImage: "/images/categories/cat-heart-health.webp",
+    rx: true,
+  },
   cardio: {
     slug: "heart-health",
     defaultImage: "/images/categories/cat-heart-health.webp",
     rx: true,
   },
-  bp: {
-    slug: "heart-health",
-    defaultImage: "/images/categories/cat-heart-health.webp",
-    rx: true,
-  },
   device: {
+    slug: "medical-devices",
+    defaultImage: "/images/categories/cat-medical-devices.webp",
+    rx: false,
+  },
+  equipment: {
     slug: "medical-devices",
     defaultImage: "/images/categories/cat-medical-devices.webp",
     rx: false,
@@ -147,6 +218,16 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-mother-baby.webp",
     rx: false,
   },
+  pediatric: {
+    slug: "mother-baby",
+    defaultImage: "/images/categories/cat-mother-baby.webp",
+    rx: false,
+  },
+  maternal: {
+    slug: "mother-baby",
+    defaultImage: "/images/categories/cat-mother-baby.webp",
+    rx: false,
+  },
   pain: {
     slug: "pain-fever",
     defaultImage: "/images/categories/cat-pain-fever.webp",
@@ -158,6 +239,16 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     rx: false,
   },
   analgesic: {
+    slug: "pain-fever",
+    defaultImage: "/images/categories/cat-pain-fever.webp",
+    rx: false,
+  },
+  antiinflammatory: {
+    slug: "pain-fever",
+    defaultImage: "/images/categories/cat-pain-fever.webp",
+    rx: false,
+  },
+  nsaid: {
     slug: "pain-fever",
     defaultImage: "/images/categories/cat-pain-fever.webp",
     rx: false,
@@ -182,6 +273,36 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-prescription.webp",
     rx: true,
   },
+  antimicrobial: {
+    slug: "prescription",
+    defaultImage: "/images/categories/cat-prescription.webp",
+    rx: true,
+  },
+  antiinfective: {
+    slug: "prescription",
+    defaultImage: "/images/categories/cat-prescription.webp",
+    rx: true,
+  },
+  antifungal: {
+    slug: "prescription",
+    defaultImage: "/images/categories/cat-prescription.webp",
+    rx: true,
+  },
+  antiviral: {
+    slug: "prescription",
+    defaultImage: "/images/categories/cat-prescription.webp",
+    rx: true,
+  },
+  malaria: {
+    slug: "prescription",
+    defaultImage: "/images/categories/cat-prescription.webp",
+    rx: true,
+  },
+  antimalarial: {
+    slug: "prescription",
+    defaultImage: "/images/categories/cat-prescription.webp",
+    rx: true,
+  },
   sexual: {
     slug: "sexual-health",
     defaultImage: "/images/categories/cat-sexual-health.webp",
@@ -197,6 +318,11 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-skin-care.webp",
     rx: false,
   },
+  topical: {
+    slug: "skin-care",
+    defaultImage: "/images/categories/cat-skin-care.webp",
+    rx: false,
+  },
   vitamin: {
     slug: "vitamins",
     defaultImage: "/images/categories/cat-vitamins.webp",
@@ -207,11 +333,31 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-vitamins.webp",
     rx: false,
   },
+  mineral: {
+    slug: "vitamins",
+    defaultImage: "/images/categories/cat-vitamins.webp",
+    rx: false,
+  },
+  wellness: {
+    slug: "vitamins",
+    defaultImage: "/images/categories/cat-vitamins.webp",
+    rx: false,
+  },
+  nutrition: {
+    slug: "vitamins",
+    defaultImage: "/images/categories/cat-vitamins.webp",
+    rx: false,
+  },
+  antihistamine: {
+    slug: "allergy",
+    defaultImage: "/images/categories/cat-allergy.webp",
+    rx: false,
+  },
 };
 
 // Prescription-only keywords per PPB (Pharmacy & Poisons Board Kenya) schedule
 export const RX_SCHEDULE_REGEX =
-  /\b(amoxicillin|amoxil|augmentin|co-amoxiclav|ampicillin|cloxacillin|azithromycin|ciprofloxacin|clarithromycin|metronidazole|flagyl|ceftriaxone|cefixime|doxycycline|erythromycin|fluconazole|gentamicin|metformin|glibenclamide|insulin|amlodipine|losartan|atenolol|enalapril|hydrochlorothiazide|salbutamol|ventolin|prednisolone|dexamethasone|tramadol|codeine|diazepam|fluoxetine|omeprazole|esomeprazole|artemether|lumefantrine|coartem|diclofenac|paroxetine|sertraline|amitriptyline|warfarin|morphine|carbamazepine|atorvastatin|rosuvastatin|simvastatin|pantoprazole)\b/i;
+  /\b(amoxicillin|amoxil|augmentin|co-amoxiclav|ampicillin|cloxacillin|azithromycin|ciprofloxacin|cefuroxime|cefixime|ceftriaxone|clindamycin|levofloxacin|moxifloxacin|nitrofurantoin|flucloxacillin|erythromycin|clarithromycin|metronidazole|flagyl|doxycycline|tinidazole|fluconazole|itraconazole|ketoconazole|acyclovir|valacyclovir|gentamicin|amlodipine|losartan|telmisartan|valsartan|enalapril|lisinopril|ramipril|atenolol|metoprolol|bisoprolol|carvedilol|nebivolol|nifedipine|furosemide|hydrochlorothiazide|spironolactone|atorvastatin|rosuvastatin|simvastatin|metformin|glibenclamide|gliclazide|glimepiride|sitagliptin|vildagliptin|dapagliflozin|empagliflozin|insulin|salbutamol|ventolin|symbicort|seretide|budesonide|fluticasone|montelukast|prednisolone|dexamethasone|hydrocortisone|betamethasone|omeprazole|esomeprazole|pantoprazole|lansoprazole|rabeprazole|diclofenac|celecoxib|etoricoxib|meloxicam|indomethacin|tramadol|codeine|morphine|amitriptyline|fluoxetine|sertraline|escitalopram|citalopram|paroxetine|venlafaxine|duloxetine|alprazolam|diazepam|lorazepam|clonazepam|zolpidem|carbamazepine|valproate|phenytoin|levetiracetam|lamotrigine|pregabalin|gabapentin|sildenafil|tadalafil|finasteride|tamsulosin|testosterone|warfarin|rivaroxaban|apixaban|clopidogrel|levothyroxine|carbimazole|methotrexate|hydroxychloroquine|allopurinol|colchicine|artemether|lumefantrine|coartem)\b/i;
 
 export const STRENGTH_REGEX = /(\d+(\.\d+)?\s*(mg|g|mcg|ml|iu|%))/i;
 export const DOSAGE_FORM_REGEX =
@@ -260,6 +406,18 @@ export class BandaGoNormalizer {
       typeof rawProductType === "string" &&
       rawProductType.trim() !== "" &&
       rawProductType.trim().toUpperCase() !== "I"
+    ) {
+      return false;
+    }
+
+    // In iDempiere M_Product, physical medicines are IsStocked = 'Y' (or true),
+    // while non-stocked clinical services/lab procedures are IsStocked = 'N' (or false).
+    const rawIsStocked = r.IsStocked ?? r.isStocked;
+    if (
+      rawIsStocked === false ||
+      rawIsStocked === 0 ||
+      (typeof rawIsStocked === "string" &&
+        ["n", "false", "0"].includes(rawIsStocked.trim().toLowerCase()))
     ) {
       return false;
     }
@@ -335,7 +493,12 @@ export class BandaGoNormalizer {
 
     if (!externalPosId || !name) return null;
 
-    const isInactive = raw.IsActive === false || raw.isActive === false;
+    const rawActive = raw.IsActive ?? raw.isActive;
+    const isInactive =
+      rawActive === false ||
+      rawActive === 0 ||
+      (typeof rawActive === "string" &&
+        ["n", "false", "0"].includes(rawActive.trim().toLowerCase()));
 
     const genericName =
       raw.genericName ||
@@ -379,11 +542,28 @@ export class BandaGoNormalizer {
       defaultImage: "/images/categories/cat-otc.webp",
       rx: false,
     };
+    let matchedCategory = false;
 
+    // Step 1: Check explicit POS category first using word boundaries
     for (const [key, mapping] of Object.entries(CATEGORY_MAP)) {
-      if (rawCategory.includes(key) || name.toLowerCase().includes(key)) {
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const keyRegex = new RegExp(`\\b${escapedKey}\\b`, "i");
+      if (keyRegex.test(rawCategory)) {
         resolvedCategory = mapping;
+        matchedCategory = true;
         break;
+      }
+    }
+
+    // Step 2: Only fall back to product name if rawCategory didn't match
+    if (!matchedCategory) {
+      for (const [key, mapping] of Object.entries(CATEGORY_MAP)) {
+        const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const keyRegex = new RegExp(`\\b${escapedKey}\\b`, "i");
+        if (keyRegex.test(name)) {
+          resolvedCategory = mapping;
+          break;
+        }
       }
     }
 
@@ -405,6 +585,7 @@ export class BandaGoNormalizer {
     let validStock = 0;
     let nearestExpiryDate: string | null = null;
     const normalizedBatches: SphereBatchSyncItem[] = [];
+    let allLotsExpired = false;
 
     const batches =
       raw.M_StorageOnHandList ||
@@ -416,6 +597,7 @@ export class BandaGoNormalizer {
     if (isInactive) {
       validStock = 0;
     } else if (Array.isArray(batches) && batches.length > 0) {
+      let hadPositiveBatchQty = false;
       for (const [idx, batch] of batches.entries()) {
         if (!batch || typeof batch !== "object") continue;
         const rawQty = batch.qtyOnHand ?? batch.QtyOnHand ?? 0;
@@ -424,6 +606,7 @@ export class BandaGoNormalizer {
           // Zero, negative, or invalid inventory holds no sellable units and must not skew nearest expiry
           continue;
         }
+        hadPositiveBatchQty = true;
 
         const asi =
           batch.m_attributesetinstance ||
@@ -506,6 +689,9 @@ export class BandaGoNormalizer {
           });
         }
       }
+      if (hadPositiveBatchQty && normalizedBatches.length === 0) {
+        allLotsExpired = true;
+      }
     } else if (Array.isArray(batches) && batches.length === 0) {
       // Explicit empty storage list means 0 physical units in warehouse
       validStock = 0;
@@ -583,6 +769,7 @@ export class BandaGoNormalizer {
       strength,
       description,
       packSize,
+      ...(allLotsExpired ? { _allLotsExpired: true } : {}),
     };
   }
 
@@ -602,23 +789,40 @@ export class BandaGoNormalizer {
 
     const existingHasBatches = existing.batches && existing.batches.length > 0;
     const incomingHasBatches = incoming.batches && incoming.batches.length > 0;
+    const existingAllExpired = Boolean(existing._allLotsExpired);
+    const incomingAllExpired = Boolean(incoming._allLotsExpired);
+    let allLotsExpired = false;
 
-    if (existingHasBatches && incomingHasBatches) {
-      // Both records carry batches: aggregate by batchNumber across multiple locators
+    if ((isPhysicalStorageItem || incomingAllExpired) && !incomingHasBatches) {
+      // Record originated from physical warehouse rows where all lots were expired or depleted
+      batches = [];
+      stock = 0;
+      nearestExpiryDate = null;
+      allLotsExpired = true;
+    } else if (existingHasBatches && incomingHasBatches) {
+      // Both records carry batches: start with existing batches, then merge/update with incoming batches
       const batchMap = new Map<string, SphereBatchSyncItem>();
-      for (const b of [...existing.batches, ...incoming.batches]) {
-        const key = b.batchNumber.trim();
+      for (const b of existing.batches) {
+        const key = (b.batchNumber || "").trim();
+        if (key) {
+          batchMap.set(key, { ...b, batchNumber: key });
+        }
+      }
+      for (const b of incoming.batches) {
+        const key = (b.batchNumber || "").trim();
+        if (!key) continue;
         const prevB = batchMap.get(key);
         if (prevB) {
-          prevB.qtyOnHand += b.qtyOnHand;
-          if (
-            b.expiryDate &&
-            (!prevB.expiryDate ||
-              new Date(b.expiryDate).getTime() < new Date(prevB.expiryDate).getTime())
-          ) {
-            prevB.expiryDate = b.expiryDate;
-          }
+          // Newer incoming state updates quantity for the same batch
+          batchMap.set(key, {
+            ...b,
+            batchNumber: key,
+            qtyOnHand: b.qtyOnHand,
+            expiryDate: b.expiryDate || prevB.expiryDate,
+            externalBatchId: b.externalBatchId || prevB.externalBatchId,
+          });
         } else {
+          // Additional batch from another page or locator
           batchMap.set(key, { ...b, batchNumber: key });
         }
       }
@@ -629,14 +833,23 @@ export class BandaGoNormalizer {
       stock = incoming.stock;
       nearestExpiryDate = incoming.nearestExpiryDate;
     } else if (existingHasBatches) {
-      batches = existing.batches;
-      stock = existing.stock;
-      nearestExpiryDate = existing.nearestExpiryDate;
-    } else if (isPhysicalStorageItem) {
-      // Record originated from physical warehouse rows where all lots were expired or depleted
+      // If incoming explicitly has 0 stock (e.g. out-of-stock transition), clear batches and set stock to 0
+      if (incoming.stock === 0 && !incoming.inStock) {
+        batches = [];
+        stock = 0;
+        nearestExpiryDate = null;
+      } else {
+        batches = existing.batches;
+        stock = existing.stock;
+        nearestExpiryDate = existing.nearestExpiryDate;
+      }
+    } else if (existingAllExpired && !incomingHasBatches) {
+      // Existing record came from physical storage where all lots were expired;
+      // prevent an unbatched M_ProductGet TotalQuantity from resurrecting expired stock.
       batches = [];
       stock = 0;
       nearestExpiryDate = null;
+      allLotsExpired = true;
     } else {
       batches = [];
       stock = incoming.stock !== undefined ? incoming.stock : existing.stock;
@@ -673,6 +886,10 @@ export class BandaGoNormalizer {
         ? incoming.categorySlug
         : existing.categorySlug || "otc";
 
+    const defaultCatImage = "/images/categories/cat-otc.webp";
+    const resolvedExistingImage = existing.imageUrl || defaultCatImage;
+    const resolvedIncomingImage = incoming.imageUrl || defaultCatImage;
+
     return {
       externalPosId: existing.externalPosId,
       name: incoming.name || existing.name,
@@ -691,13 +908,14 @@ export class BandaGoNormalizer {
         existing.requiresPrescription || incoming.requiresPrescription,
       ),
       imageUrl:
-        categorySlug !== "otc" && incoming.imageUrl.includes("cat-otc")
-          ? existing.imageUrl
-          : incoming.imageUrl || existing.imageUrl,
+        categorySlug !== "otc" && resolvedIncomingImage.includes("cat-otc")
+          ? resolvedExistingImage
+          : resolvedIncomingImage,
       nearestExpiryDate,
       batches,
       description,
       packSize,
+      ...(allLotsExpired ? { _allLotsExpired: true } : {}),
     };
   }
 

@@ -274,6 +274,7 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    modulePreload: false,
     rollupOptions: {
       input: {
         dashboard: resolve(__dirname, "dashboard.html"),

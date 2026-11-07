@@ -28,6 +28,8 @@ export type MessageType =
   | "SPHERE_RETRY_FAILED"
   | "SPHERE_CLEAR_QUEUE"
   | "SPHERE_TEST_CONNECTION"
+  | "SPHERE_GET_DIAGNOSTICS"
+  | "SPHERE_CLEAR_ERRORS"
   | "BANDAGO_TRIGGER_POLL";
 
 export interface ClearTabDataPayload {

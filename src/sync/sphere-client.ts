@@ -2,7 +2,13 @@ import {
   SphereProductInput,
   SphereProductSyncItem,
 } from "../extraction/bandago-normalizer";
-import { SyncQueueManager, QueueStats, coalesceSyncItems } from "./sync-queue";
+import {
+  SyncQueueManager,
+  QueueStats,
+  ProblemQueueItem,
+  coalesceSyncItems,
+} from "./sync-queue";
+import { activityRepo, sessionRepo } from "../data/repositories";
 
 export interface SyncConfig {
   endpointUrl: string;
@@ -17,6 +23,26 @@ export interface FlushResult {
   error?: string;
 }
 
+export interface SyncErrorLogEntry {
+  id: string;
+  timestamp: string;
+  source: "SYNC_FLUSH" | "BANDAGO_POLL" | "ITEM_UPSERT" | "CONNECTION_TEST";
+  message: string;
+  externalPosId?: string;
+  productName?: string;
+}
+
+export interface SyncDiagnostics {
+  lastSyncAt: string | null;
+  lastSyncError: string | null;
+  lastPollAt: string | null;
+  lastPollSuccess: boolean | null;
+  lastPollMessage: string | null;
+  lastPollCount: number;
+  errorHistory: SyncErrorLogEntry[];
+  failedItems: ProblemQueueItem[];
+}
+
 const STORAGE_KEYS = {
   ENDPOINT_URL: "sphere_endpoint_url",
   API_KEY: "sphere_api_key",
@@ -24,6 +50,11 @@ const STORAGE_KEYS = {
   PHARMACY_ID: "sphere_pharmacy_id",
   LAST_SYNC_AT: "sphere_last_sync_at",
   LAST_SYNC_ERROR: "sphere_last_sync_error",
+  LAST_POLL_AT: "sphere_last_poll_at",
+  LAST_POLL_SUCCESS: "sphere_last_poll_success",
+  LAST_POLL_MESSAGE: "sphere_last_poll_message",
+  LAST_POLL_COUNT: "sphere_last_poll_count",
+  ERROR_LOG: "sphere_error_log",
 };
 
 export class SphereSyncClient {
@@ -117,7 +148,7 @@ export class SphereSyncClient {
 
   /**
    * Dispatches pending items to the Sphere Pharmacy ingestion endpoint.
-   * Processes multiple batches (up to 10 batches / 500 items per flush)
+   * Processes multiple batches (up to 100 batches / 5,000 items per flush)
    * so catalog updates drain efficiently.
    */
   static async flushQueue(
@@ -157,7 +188,9 @@ export class SphereSyncClient {
       });
 
       let totalSynced = 0;
-      const maxBatches = 10;
+      let totalFailed = 0;
+      let lastPartialError: string | undefined;
+      const maxBatches = 100;
       let batchesProcessed = 0;
 
       while (batchesProcessed < maxBatches) {
@@ -203,21 +236,99 @@ export class SphereSyncClient {
             );
           }
 
-          await SyncQueueManager.markSuccess(ids);
-          totalSynced += pendingItems.length;
-
-          // Record successful sync timestamp
-          const nowIso = new Date().toISOString();
-          if (typeof chrome !== "undefined" && chrome.storage?.local) {
-            await chrome.storage.local.set({
-              [STORAGE_KEYS.LAST_SYNC_AT]: nowIso,
-              [STORAGE_KEYS.LAST_SYNC_ERROR]: "",
-            });
+          let resData: any = null;
+          if (typeof response.json === "function") {
+            try {
+              resData = await response.json();
+            } catch {
+              // Ignore if response has no JSON body
+            }
           }
 
-          // If batch was smaller than BATCH_SIZE, queue has drained
-          if (pendingItems.length < this.BATCH_SIZE) {
-            break;
+          if (resData && resData.success === false) {
+            const serverErr =
+              resData.error ||
+              (Array.isArray(resData.errors) && resData.errors[0]?.error) ||
+              "Sphere API reported sync failure (success: false)";
+            throw new Error(serverErr);
+          }
+
+          const nowIso = new Date().toISOString();
+          const itemErrors: Array<{
+            externalPosId?: string;
+            name?: string;
+            error?: string;
+          }> = Array.isArray(resData?.errors) ? resData.errors : [];
+
+          if (itemErrors.length > 0) {
+            const failedMap = new Map<
+              string,
+              { error: string; name?: string }
+            >();
+            for (const errEntry of itemErrors) {
+              if (errEntry && errEntry.externalPosId) {
+                failedMap.set(String(errEntry.externalPosId).trim(), {
+                  error: errEntry.error || "Item upsert failed on Sphere server",
+                  name: errEntry.name,
+                });
+              }
+            }
+
+            const succeededIds: number[] = [];
+            const failedQueueItems = [];
+
+            for (const qItem of pendingItems) {
+              const matchedErr = failedMap.get(qItem.externalPosId);
+              if (matchedErr) {
+                failedQueueItems.push({ item: qItem, err: matchedErr });
+              } else if (qItem.id) {
+                succeededIds.push(qItem.id);
+              }
+            }
+
+            if (succeededIds.length > 0) {
+              await SyncQueueManager.markSuccess(succeededIds);
+              totalSynced += succeededIds.length;
+            }
+
+            for (const { item, err } of failedQueueItems) {
+              await SyncQueueManager.markFailed(
+                [item],
+                err.error,
+                this.MAX_RETRIES,
+              );
+              await this.recordError({
+                source: "ITEM_UPSERT",
+                message: err.error,
+                externalPosId: item.externalPosId,
+                productName:
+                  err.name ||
+                  (item.payload as SphereProductSyncItem)?.name ||
+                  item.externalPosId,
+              });
+            }
+
+            totalFailed += failedQueueItems.length;
+            const firstErr = itemErrors[0];
+            lastPartialError = `Partial sync: ${failedQueueItems.length} medication(s) failed (${firstErr?.name || firstErr?.externalPosId || "item"}: ${firstErr?.error || "error"})`;
+
+            if (typeof chrome !== "undefined" && chrome.storage?.local) {
+              await chrome.storage.local.set({
+                [STORAGE_KEYS.LAST_SYNC_AT]: nowIso,
+                [STORAGE_KEYS.LAST_SYNC_ERROR]: lastPartialError,
+              });
+            }
+          } else {
+            await SyncQueueManager.markSuccess(ids);
+            totalSynced += pendingItems.length;
+
+            // Record successful sync timestamp
+            if (typeof chrome !== "undefined" && chrome.storage?.local) {
+              await chrome.storage.local.set({
+                [STORAGE_KEYS.LAST_SYNC_AT]: nowIso,
+                [STORAGE_KEYS.LAST_SYNC_ERROR]: "",
+              });
+            }
           }
         } catch (err: any) {
           const errorMessage =
@@ -241,9 +352,14 @@ export class SphereSyncClient {
             });
           }
 
+          await this.recordError({
+            source: "SYNC_FLUSH",
+            message: errorMessage,
+          });
+
           return {
             synced: totalSynced,
-            failed: pendingItems.length,
+            failed: totalFailed + pendingItems.length,
             error: errorMessage,
           };
         } finally {
@@ -251,7 +367,11 @@ export class SphereSyncClient {
         }
       }
 
-      return { synced: totalSynced, failed: 0 };
+      return {
+        synced: totalSynced,
+        failed: totalFailed,
+        ...(lastPartialError ? { error: lastPartialError } : {}),
+      };
     } finally {
       this.isFlushing = false;
     }
@@ -313,6 +433,195 @@ export class SphereSyncClient {
       return { ok: false, error: msg };
     } finally {
       clearTimeout(timeoutId);
+    }
+  }
+
+  /**
+   * Records a structured error entry in persistent error history (up to 25 most recent)
+   * and logs it to the active capture session's activity log if one exists.
+   */
+  static async recordError(
+    entry: Omit<SyncErrorLogEntry, "id" | "timestamp">,
+  ): Promise<void> {
+    const newEntry: SyncErrorLogEntry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      ...entry,
+    };
+
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        const data = await chrome.storage.local.get([STORAGE_KEYS.ERROR_LOG]);
+        const existing: SyncErrorLogEntry[] = Array.isArray(
+          data[STORAGE_KEYS.ERROR_LOG],
+        )
+          ? data[STORAGE_KEYS.ERROR_LOG]
+          : [];
+        const updated = [newEntry, ...existing].slice(0, 25);
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.ERROR_LOG]: updated,
+        });
+      } else if (typeof localStorage !== "undefined") {
+        const raw = localStorage.getItem(STORAGE_KEYS.ERROR_LOG);
+        const existing: SyncErrorLogEntry[] = raw ? JSON.parse(raw) : [];
+        const updated = [newEntry, ...existing].slice(0, 25);
+        localStorage.setItem(STORAGE_KEYS.ERROR_LOG, JSON.stringify(updated));
+      }
+    } catch {
+      // Ignore storage errors
+    }
+
+    // Also log to session activity feed if an active session exists
+    try {
+      const activeSession = await sessionRepo.getActiveSession();
+      if (activeSession?.id) {
+        const label = entry.productName
+          ? `[${entry.source}] ${entry.productName}: ${entry.message}`
+          : `[${entry.source}] ${entry.message}`;
+        await activityRepo.logEvent({
+          sessionId: activeSession.id,
+          actor: "system",
+          category: "warning",
+          message: label,
+        });
+      }
+    } catch {
+      // Ignore if IndexedDB is mocked or unavailable
+    }
+  }
+
+  /**
+   * Records the status of the latest BandaGo active tab poll for diagnostics UI.
+   */
+  static async recordPollStatus(result: {
+    success: boolean;
+    count: number;
+    message: string;
+  }): Promise<void> {
+    const nowIso = new Date().toISOString();
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.LAST_POLL_AT]: nowIso,
+          [STORAGE_KEYS.LAST_POLL_SUCCESS]: result.success,
+          [STORAGE_KEYS.LAST_POLL_MESSAGE]: result.message,
+          [STORAGE_KEYS.LAST_POLL_COUNT]: result.count,
+        });
+      } else if (typeof localStorage !== "undefined") {
+        localStorage.setItem(STORAGE_KEYS.LAST_POLL_AT, nowIso);
+        localStorage.setItem(
+          STORAGE_KEYS.LAST_POLL_SUCCESS,
+          String(result.success),
+        );
+        localStorage.setItem(STORAGE_KEYS.LAST_POLL_MESSAGE, result.message);
+        localStorage.setItem(
+          STORAGE_KEYS.LAST_POLL_COUNT,
+          String(result.count),
+        );
+      }
+    } catch {
+      // Ignore storage errors
+    }
+
+    if (
+      !result.success &&
+      !result.message.includes("disabled in settings") &&
+      !result.message.includes("Chrome extension APIs not available")
+    ) {
+      await this.recordError({
+        source: "BANDAGO_POLL",
+        message: result.message,
+      });
+    }
+  }
+
+  /**
+   * Retrieves comprehensive synchronization health & error reporting diagnostics.
+   */
+  static async getDiagnostics(): Promise<SyncDiagnostics> {
+    let lastSyncAt: string | null = null;
+    let lastSyncError: string | null = null;
+    let lastPollAt: string | null = null;
+    let lastPollSuccess: boolean | null = null;
+    let lastPollMessage: string | null = null;
+    let lastPollCount = 0;
+    let errorHistory: SyncErrorLogEntry[] = [];
+
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        const data = await chrome.storage.local.get([
+          STORAGE_KEYS.LAST_SYNC_AT,
+          STORAGE_KEYS.LAST_SYNC_ERROR,
+          STORAGE_KEYS.LAST_POLL_AT,
+          STORAGE_KEYS.LAST_POLL_SUCCESS,
+          STORAGE_KEYS.LAST_POLL_MESSAGE,
+          STORAGE_KEYS.LAST_POLL_COUNT,
+          STORAGE_KEYS.ERROR_LOG,
+        ]);
+        lastSyncAt = data[STORAGE_KEYS.LAST_SYNC_AT] || null;
+        lastSyncError = data[STORAGE_KEYS.LAST_SYNC_ERROR] || null;
+        lastPollAt = data[STORAGE_KEYS.LAST_POLL_AT] || null;
+        lastPollSuccess =
+          typeof data[STORAGE_KEYS.LAST_POLL_SUCCESS] === "boolean"
+            ? data[STORAGE_KEYS.LAST_POLL_SUCCESS]
+            : null;
+        lastPollMessage = data[STORAGE_KEYS.LAST_POLL_MESSAGE] || null;
+        lastPollCount = Number(data[STORAGE_KEYS.LAST_POLL_COUNT] || 0);
+        errorHistory = Array.isArray(data[STORAGE_KEYS.ERROR_LOG])
+          ? data[STORAGE_KEYS.ERROR_LOG]
+          : [];
+      } else if (typeof localStorage !== "undefined") {
+        lastSyncAt = localStorage.getItem(STORAGE_KEYS.LAST_SYNC_AT) || null;
+        lastSyncError =
+          localStorage.getItem(STORAGE_KEYS.LAST_SYNC_ERROR) || null;
+        lastPollAt = localStorage.getItem(STORAGE_KEYS.LAST_POLL_AT) || null;
+        const pollSuccRaw = localStorage.getItem(
+          STORAGE_KEYS.LAST_POLL_SUCCESS,
+        );
+        lastPollSuccess =
+          pollSuccRaw === "true" ? true : pollSuccRaw === "false" ? false : null;
+        lastPollMessage =
+          localStorage.getItem(STORAGE_KEYS.LAST_POLL_MESSAGE) || null;
+        lastPollCount = Number(
+          localStorage.getItem(STORAGE_KEYS.LAST_POLL_COUNT) || 0,
+        );
+        const errRaw = localStorage.getItem(STORAGE_KEYS.ERROR_LOG);
+        errorHistory = errRaw ? JSON.parse(errRaw) : [];
+      }
+    } catch {
+      // Ignore storage read error
+    }
+
+    const failedItems = await SyncQueueManager.getProblemItems(25);
+
+    return {
+      lastSyncAt,
+      lastSyncError,
+      lastPollAt,
+      lastPollSuccess,
+      lastPollMessage,
+      lastPollCount,
+      errorHistory,
+      failedItems,
+    };
+  }
+
+  /**
+   * Clears stored error history and active sync error banner.
+   */
+  static async clearErrorHistory(): Promise<void> {
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.ERROR_LOG]: [],
+          [STORAGE_KEYS.LAST_SYNC_ERROR]: "",
+        });
+      } else if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(STORAGE_KEYS.ERROR_LOG);
+        localStorage.removeItem(STORAGE_KEYS.LAST_SYNC_ERROR);
+      }
+    } catch {
+      // Ignore storage error
     }
   }
 

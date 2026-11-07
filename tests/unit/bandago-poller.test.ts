@@ -702,5 +702,126 @@ describe("BandaGoActivePoller", () => {
       global.fetch = origFetch;
     }
   });
+
+  it("queries include essential fields: Value, Description, Category, Expiration, and Margin", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    let capturedArgs: any[] = [];
+    (chrome.scripting.executeScript as any).mockImplementation(
+      async (opts: any) => {
+        capturedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      },
+    );
+
+    await BandaGoActivePoller.pollActiveTabs();
+
+    const storageQuery = capturedArgs[1];
+    const productQuery = capturedArgs[2];
+
+    expect(storageQuery).toContain("Value");
+    expect(storageQuery).toContain("Description");
+    expect(storageQuery).toContain("BH_PriceMargin");
+    expect(storageQuery).toContain("BH_HasExpiration");
+    expect(storageQuery).toContain("HasExpirationDate");
+    expect(storageQuery).toContain("M_Product_Category");
+    expect(storageQuery).toContain("KnhtsConcept");
+    expect(storageQuery).toContain("SerNo");
+
+    expect(productQuery).toContain("Value");
+    expect(productQuery).toContain("Description");
+    expect(productQuery).toContain("BH_BuyPrice");
+    expect(productQuery).toContain("BH_PriceMargin");
+    expect(productQuery).toContain("BH_HasExpiration");
+    expect(productQuery).toContain("HasExpirationDate");
+    expect(productQuery).toContain("M_Product_Category");
+    expect(productQuery).toContain("KnhtsConcept");
+  });
+
+  it("in-tab poller retries with alternate endpoint when HTTP 200 returns non-JSON SPA HTML", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    let passedFunc: any = null;
+    let passedArgs: any[] = [];
+    (chrome.scripting.executeScript as any).mockImplementation(
+      async (opts: any) => {
+        passedFunc = opts.func;
+        passedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      },
+    );
+
+    await BandaGoActivePoller.pollActiveTabs();
+
+    const attemptedUrls: string[] = [];
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url: string) => {
+      attemptedUrls.push(url);
+      if (url === "/graphql/") {
+        // Return HTTP 200 with HTML (typical SPA router rewrite)
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+          },
+          text: async () => "<!DOCTYPE html><html><body>SPA</body></html>",
+          json: async () => {
+            throw new SyntaxError("Unexpected token < in JSON at position 0");
+          },
+        };
+      }
+      if (url === "/graphql") {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "content-type" ? "application/json" : null,
+          },
+          json: async () => ({
+            data: {
+              M_StorageOnHandGet: { Results: [] },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ data: {} }) };
+    });
+
+    try {
+      const result = await passedFunc(
+        "/graphql/",
+        passedArgs[1],
+        passedArgs[2],
+        passedArgs[3],
+        "Bearer test",
+      );
+
+      // Verify that non-JSON response on /graphql/ triggered fallback to /graphql
+      expect(attemptedUrls).toContain("/graphql/");
+      expect(attemptedUrls).toContain("/graphql");
+      expect(result.data.M_StorageOnHandGet).toBeDefined();
+    } finally {
+      global.fetch = origFetch;
+    }
+  });
 });
 
