@@ -584,7 +584,7 @@ describe("BandaGoActivePoller", () => {
       const body = JSON.parse(opts.body);
       fetchCalls.push({ url, variables: body.variables });
       if (body.operationName === "M_StorageOnHandForInventoryList") {
-        const page = body.variables?.Page || 1;
+        const page = body.variables?.Page ?? 0;
         return {
           ok: true,
           status: 200,
@@ -616,10 +616,10 @@ describe("BandaGoActivePoller", () => {
         "Bearer test",
       );
 
-      // Verify page 1 and page 2 were both fetched
+      // Verify 0-indexed page 0 and page 1 were both fetched (BandaGo idemp-plugins SDL)
       const storageCalls = fetchCalls.filter((c) => c.variables?.Page !== undefined);
+      expect(storageCalls.some((c) => c.variables.Page === 0)).toBe(true);
       expect(storageCalls.some((c) => c.variables.Page === 1)).toBe(true);
-      expect(storageCalls.some((c) => c.variables.Page === 2)).toBe(true);
       // Both results should be merged into M_StorageOnHandGet.Results
       expect(result.data.M_StorageOnHandGet.Results).toHaveLength(2);
     } finally {
@@ -730,20 +730,76 @@ describe("BandaGoActivePoller", () => {
     expect(storageQuery).toContain("Value");
     expect(storageQuery).toContain("Description");
     expect(storageQuery).toContain("BH_PriceMargin");
-    expect(storageQuery).toContain("BH_HasExpiration");
-    expect(storageQuery).toContain("HasExpirationDate");
+    expect(storageQuery).toContain("Discontinued");
+    expect(storageQuery).toContain("M_AttributeSet");
     expect(storageQuery).toContain("M_Product_Category");
-    expect(storageQuery).toContain("KnhtsConcept");
+    expect(storageQuery).toContain("BH_Concept");
+    expect(storageQuery).toContain("M_ProductPrices");
+    expect(storageQuery).toContain("AD_Client");
+    expect(storageQuery).toContain("M_Locator");
     expect(storageQuery).toContain("SerNo");
+    expect(storageQuery).not.toContain("BH_HasExpiration");
+    expect(storageQuery).not.toContain("KnhtsConcept");
 
     expect(productQuery).toContain("Value");
     expect(productQuery).toContain("Description");
     expect(productQuery).toContain("BH_BuyPrice");
     expect(productQuery).toContain("BH_PriceMargin");
-    expect(productQuery).toContain("BH_HasExpiration");
-    expect(productQuery).toContain("HasExpirationDate");
+    expect(productQuery).toContain("Discontinued");
+    expect(productQuery).toContain("M_AttributeSet");
     expect(productQuery).toContain("M_Product_Category");
-    expect(productQuery).toContain("KnhtsConcept");
+    expect(productQuery).toContain("BH_Concept");
+    expect(productQuery).toContain("M_ProductPrices");
+    expect(productQuery).toContain("AD_Client");
+    expect(productQuery).toContain("AD_Org");
+    expect(productQuery).not.toContain("BH_HasExpiration");
+    expect(productQuery).not.toContain("KnhtsConcept");
+  });
+
+  it("aborts poll with TENANT_MISMATCH when AD_Client.UU differs from expectedTenantUU", async () => {
+    vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+      endpointUrl: "https://test/sync",
+      apiKey: "key",
+      enabled: true,
+      expectedTenantUU: "tenant-sphere-main",
+    });
+
+    (chrome.tabs.query as any).mockResolvedValue([
+      { id: 42, url: "https://go.bandahealth.org/inventory" },
+    ]);
+
+    const enqueueSpy = vi.spyOn(SphereSyncClient, "enqueue").mockResolvedValue(0);
+    const telemetrySpy = vi.spyOn(SphereSyncClient, "reportTelemetry").mockResolvedValue({ ok: true });
+
+    (chrome.scripting.executeScript as any).mockResolvedValue([
+      {
+        result: {
+          data: {
+            M_ProductGet: {
+              Results: [
+                {
+                  UU: "prod-other-clinic",
+                  Name: "Panadol 500mg",
+                  BH_SellPrice: 50,
+                  TotalQuantity: 20,
+                  AD_Client: { UU: "tenant-wrong-clinic" },
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = await BandaGoActivePoller.pollActiveTabs();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Tenant mismatch");
+    expect(enqueueSpy).not.toHaveBeenCalled();
+    expect(telemetrySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errors: [expect.objectContaining({ code: "TENANT_MISMATCH", severity: "CRITICAL" })],
+      }),
+    );
   });
 
   it("in-tab poller retries with alternate endpoint when HTTP 200 returns non-JSON SPA HTML", async () => {

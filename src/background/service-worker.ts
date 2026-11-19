@@ -1,5 +1,7 @@
 import { captureController } from "./capture-controller";
 import { BandaGoActivePoller } from "./bandago-poller";
+import { BandaGoWritebackEngine } from "./bandago-writeback";
+import { BandaGoNormalizer } from "../extraction/bandago-normalizer";
 import { SphereSyncClient } from "../sync/sphere-client";
 import {
   ExtensionMessage,
@@ -10,6 +12,9 @@ import {
 // Initialize state from IndexedDB when service worker boots up
 captureController.init().catch(console.error);
 BandaGoActivePoller.init();
+BandaGoWritebackEngine.init();
+
+let passiveMutationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // 1. Top-level Debugger Event Listener
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -267,9 +272,99 @@ chrome.runtime.onMessage.addListener(
             break;
           }
 
+          case "SPHERE_DISMISS_ERRORS": {
+            await SphereSyncClient.dismissActiveErrors();
+            sendResponse({ success: true });
+            break;
+          }
+
           case "BANDAGO_TRIGGER_POLL": {
             const pollResult = await BandaGoActivePoller.triggerManualPoll();
             sendResponse({ success: true, data: pollResult });
+            break;
+          }
+
+          case "BANDAGO_SYNC_OUTBOUND_NOW": {
+            const writebackResult = await BandaGoWritebackEngine.syncOutboundNow({
+              trigger: "MANUAL",
+            });
+            sendResponse({ success: true, data: writebackResult });
+            break;
+          }
+
+          case "BANDAGO_PASSIVE_CATALOG": {
+            const cfg = await SphereSyncClient.getConfig();
+            if (!cfg.enabled) {
+              sendResponse({ success: true, data: { skipped: true } });
+              break;
+            }
+            const normalized = BandaGoNormalizer.extractProductsFromPayload(
+              message.payload,
+            );
+            const detectedTenantUU =
+              normalized.find((item) => Boolean(item.tenantUU))?.tenantUU ??
+              null;
+            if (
+              cfg.expectedTenantUU?.trim() &&
+              detectedTenantUU &&
+              cfg.expectedTenantUU.trim() !== detectedTenantUU
+            ) {
+              await SphereSyncClient.reportTelemetry({
+                errors: [
+                  {
+                    direction: "INBOUND",
+                    source: "PASSIVE_CONTENT_SCRIPT",
+                    severity: "CRITICAL",
+                    code: "TENANT_MISMATCH",
+                    message: `Passive interceptor blocked payload from unexpected BandaGo tenant ${detectedTenantUU}`,
+                  },
+                ],
+              }).catch(() => {});
+              sendResponse({ success: false, error: "Tenant mismatch" });
+              break;
+            }
+            if (normalized.length > 0) {
+              await SphereSyncClient.enqueue(
+                normalized,
+                "EXTENSION_STREAM",
+                detectedTenantUU,
+              );
+            }
+            sendResponse({
+              success: true,
+              data: { captured: normalized.length },
+            });
+            break;
+          }
+
+          case "BANDAGO_PASSIVE_MUTATION": {
+            if (passiveMutationDebounceTimer) {
+              clearTimeout(passiveMutationDebounceTimer);
+            }
+            passiveMutationDebounceTimer = setTimeout(() => {
+              passiveMutationDebounceTimer = null;
+              BandaGoActivePoller.pollActiveTabs().catch((err) => {
+                console.warn("[Passive Mutation Follow-up Poll]:", err);
+              });
+            }, 2000);
+            sendResponse({ success: true, data: { scheduled: true } });
+            break;
+          }
+
+          case "SPHERE_REPORT_TELEMETRY": {
+            const reportRes = await SphereSyncClient.reportTelemetry(
+              (message.payload as any) || {},
+            );
+            sendResponse({ success: true, data: reportRes });
+            break;
+          }
+
+          case "SPHERE_GET_OUTBOUND_STATUS": {
+            const [status, policy] = await Promise.all([
+              SphereSyncClient.getOutboundStatus(),
+              SphereSyncClient.getServerPolicy(),
+            ]);
+            sendResponse({ success: true, data: { status, policy } });
             break;
           }
 

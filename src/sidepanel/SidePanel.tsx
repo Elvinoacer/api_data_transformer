@@ -31,6 +31,8 @@ import {
 import { generateFlattenedCsv } from "../export/csv";
 import { generateExportFilename } from "../export/filenames";
 import {
+  OutboundRunStatus,
+  ServerSyncPolicy,
   SphereSyncClient,
   SyncConfig,
   SyncDiagnostics,
@@ -53,6 +55,7 @@ import {
   Radio,
   AlertTriangle,
   RefreshCw,
+  ArrowLeftRight,
 } from "lucide-react";
 
 const SidePanelWorkspace: React.FC = () => {
@@ -87,7 +90,12 @@ const SidePanelWorkspace: React.FC = () => {
     total: 0,
   });
   const [sphereDiag, setSphereDiag] = useState<SyncDiagnostics | null>(null);
+  const [outboundStatus, setOutboundStatus] = useState<OutboundRunStatus | null>(
+    null,
+  );
+  const [serverPolicy, setServerPolicy] = useState<ServerSyncPolicy>({});
   const [isSyncingNow, setIsSyncingNow] = useState(false);
+  const [isSyncingOutbound, setIsSyncingOutbound] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -98,6 +106,8 @@ const SidePanelWorkspace: React.FC = () => {
         cfg,
         qStats,
         diag,
+        outStatus,
+        srvPolicy,
       ] = await Promise.all([
         sessionRepo.getActiveSession(),
         sessionRepo.getAllSessions(),
@@ -107,11 +117,15 @@ const SidePanelWorkspace: React.FC = () => {
         SphereSyncClient.getConfig(),
         SphereSyncClient.getQueueStats(),
         SphereSyncClient.getDiagnostics(),
+        SphereSyncClient.getOutboundStatus(),
+        SphereSyncClient.getServerPolicy(),
       ]);
 
       setSphereConfig(cfg);
       setSphereQueue(qStats);
       setSphereDiag(diag);
+      setOutboundStatus(outStatus);
+      setServerPolicy(srvPolicy);
 
       const currentSession = activeDb || allSessions[0] || null;
       setSession(currentSession);
@@ -252,6 +266,58 @@ const SidePanelWorkspace: React.FC = () => {
     } finally {
       setIsSyncingNow(false);
     }
+  };
+
+  const handleSyncOutboundNow = async () => {
+    setIsSyncingOutbound(true);
+    try {
+      const res = await sendExtensionMessage<
+        unknown,
+        { ok: boolean; synced: number; failed: number; message: string }
+      >("BANDAGO_SYNC_OUTBOUND_NOW");
+      await refresh();
+      if (res.success && res.data) {
+        notify({
+          title: res.data.ok
+            ? "Website -> POS Sync Complete"
+            : "Website -> POS Attention",
+          description: res.data.message,
+          variant: res.data.ok ? "success" : "warning",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: "Outbound Sync Unavailable",
+          description: res.error || "Could not push stock edits to BandaGo.",
+          variant: "warning",
+          actor: "system",
+        });
+      }
+    } finally {
+      setIsSyncingOutbound(false);
+    }
+  };
+
+  const handleDismissSphereErrors = async () => {
+    setSphereDiag((prev) =>
+      prev
+        ? {
+            ...prev,
+            lastSyncError: null,
+            lastPollMessage: null,
+            lastPollSuccess:
+              prev.lastPollSuccess === false ? null : prev.lastPollSuccess,
+          }
+        : null,
+    );
+    await SphereSyncClient.dismissActiveErrors();
+    await refresh();
+    notify({
+      title: "Sync Alert Dismissed",
+      description: "Active sync error dismissed.",
+      variant: "info",
+      actor: "user",
+    });
   };
 
   const handleQuickPaginate = async (sourceId?: string) => {
@@ -665,30 +731,64 @@ const SidePanelWorkspace: React.FC = () => {
               </span>
             </div>
 
-            <div className="flex items-center justify-between text-[10px] text-stone-600">
+            <div className="flex items-center justify-between text-[10px] text-stone-600 gap-2">
               <span>
-                Last sync:{" "}
+                Mode:{" "}
+                <strong className="text-stone-900">
+                  {serverPolicy.outboundSyncMode === "AUTO_SYNC"
+                    ? "Auto Two-Way"
+                    : "Manual Export"}
+                </strong>
+                {" · "}
+                Last:{" "}
                 <strong className="text-stone-900">
                   {sphereDiag?.lastSyncAt
                     ? new Date(sphereDiag.lastSyncAt).toLocaleTimeString()
-                    : "None yet"}
+                    : "None"}
                 </strong>
               </span>
               {sphereConfig.enabled && (
-                <button
-                  type="button"
-                  disabled={isSyncingNow}
-                  onClick={handleQuickSphereSync}
-                  className="inline-flex items-center gap-1 font-bold text-emerald-800 hover:underline disabled:opacity-50"
-                >
-                  <RefreshCw
-                    className={`w-3 h-3 ${isSyncingNow ? "animate-spin" : ""}`}
-                    aria-hidden="true"
-                  />
-                  {sphereQueue.failed > 0 ? "Retry & Sync" : "Sync Now"}
-                </button>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    type="button"
+                    disabled={isSyncingNow}
+                    onClick={handleQuickSphereSync}
+                    className="inline-flex items-center gap-1 font-bold text-emerald-800 hover:underline disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`w-3 h-3 ${isSyncingNow ? "animate-spin" : ""}`}
+                      aria-hidden="true"
+                    />
+                    {sphereQueue.failed > 0 ? "Retry & Sync" : "Sync Now"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSyncingOutbound}
+                    onClick={handleSyncOutboundNow}
+                    className="inline-flex items-center gap-1 font-bold text-sky-800 hover:underline disabled:opacity-50"
+                    title="Push pending Sphere online sales/stock adjustments back to BandaGo"
+                  >
+                    <ArrowLeftRight
+                      className={`w-3 h-3 ${isSyncingOutbound ? "animate-pulse" : ""}`}
+                      aria-hidden="true"
+                    />
+                    Web → POS
+                  </button>
+                </div>
               )}
             </div>
+
+            {outboundStatus?.ok === false && outboundStatus?.message && (
+              <div className="p-2 rounded-xl bg-amber-50 border border-amber-200 text-[10px] text-amber-900">
+                <strong>Writeback: </strong>
+                <span className="font-mono break-words">
+                  {outboundStatus.lastErrorCode
+                    ? `[${outboundStatus.lastErrorCode}] `
+                    : ""}
+                  {outboundStatus.message}
+                </span>
+              </div>
+            )}
 
             {(sphereDiag?.lastSyncError ||
               (sphereDiag?.lastPollSuccess === false &&
@@ -698,12 +798,21 @@ const SidePanelWorkspace: React.FC = () => {
                 role="alert"
                 className="p-2 rounded-xl bg-rose-50 border border-rose-200 text-[10px] text-rose-800 space-y-0.5"
               >
-                <div className="font-bold flex items-center gap-1">
-                  <AlertTriangle
-                    className="w-3 h-3 text-rose-600 flex-shrink-0"
-                    aria-hidden="true"
-                  />
-                  <span>Sync Attention Needed</span>
+                <div className="flex items-center justify-between gap-1 font-bold">
+                  <div className="flex items-center gap-1">
+                    <AlertTriangle
+                      className="w-3 h-3 text-rose-600 flex-shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>Sync Attention Needed</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDismissSphereErrors}
+                    className="text-[10px] text-rose-700 hover:underline font-normal cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
                 </div>
                 <p className="font-mono break-words">
                   {sphereDiag?.lastSyncError || sphereDiag?.lastPollMessage}

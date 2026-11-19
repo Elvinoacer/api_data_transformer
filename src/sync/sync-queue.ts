@@ -290,6 +290,13 @@ export class SyncQueueManager {
   }
 
   /**
+   * Deletes a single item by id from the sync queue.
+   */
+  static async deleteItem(id: number): Promise<void> {
+    await db.sync_queue.delete(id);
+  }
+
+  /**
    * Clears the entire sync queue.
    */
   static async clearQueue(): Promise<void> {

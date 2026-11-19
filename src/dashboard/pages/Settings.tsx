@@ -22,11 +22,15 @@ import {
   Radio,
   Sparkles,
   Eraser,
+  ArrowLeftRight,
+  Copy,
 } from "lucide-react";
 import { DEFAULT_SETTINGS } from "../../shared/constants";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import {
+  OutboundRunStatus,
+  ServerSyncPolicy,
   SphereSyncClient,
   SyncConfig,
   SyncDiagnostics,
@@ -70,7 +74,17 @@ export const Settings: React.FC<Props> = ({
     apiKey: "",
     enabled: false,
     pharmacyId: "DEFAULT_STORE",
+    allowOutboundWriteback: true,
+    expectedTenantUU: "",
   });
+  const [outboundStatus, setOutboundStatus] = useState<OutboundRunStatus>({
+    lastRunAt: null,
+    ok: null,
+    message: null,
+    lastErrorCode: null,
+  });
+  const [serverPolicy, setServerPolicy] = useState<ServerSyncPolicy>({});
+  const [syncingOutbound, setSyncingOutbound] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [queueStats, setQueueStats] = useState({
     pending: 0,
@@ -98,12 +112,16 @@ export const Settings: React.FC<Props> = ({
 
   const refreshQueueStats = useCallback(async () => {
     try {
-      const [stats, diag] = await Promise.all([
+      const [stats, diag, outStatus, srvPolicy] = await Promise.all([
         SphereSyncClient.getQueueStats(),
         SphereSyncClient.getDiagnostics(),
+        SphereSyncClient.getOutboundStatus(),
+        SphereSyncClient.getServerPolicy(),
       ]);
       setQueueStats(stats);
       setDiagnostics(diag);
+      setOutboundStatus(outStatus);
+      setServerPolicy(srvPolicy);
     } catch {
       // Ignore background error
     }
@@ -254,12 +272,49 @@ export const Settings: React.FC<Props> = ({
     });
   };
 
+  const handleDismissSyncError = async () => {
+    setDiagnostics((prev) => ({
+      ...prev,
+      lastSyncError: null,
+      lastPollMessage: null,
+      lastPollSuccess:
+        prev.lastPollSuccess === false ? null : prev.lastPollSuccess,
+    }));
+    await SphereSyncClient.dismissActiveErrors();
+    await refreshQueueStats();
+    notify({
+      title: "Error Dismissed",
+      description: "Synchronization error alert dismissed.",
+      variant: "info",
+      actor: "user",
+    });
+  };
+
   const handleClearErrorHistory = async () => {
+    setDiagnostics((prev) => ({
+      ...prev,
+      errorHistory: [],
+      lastSyncError: null,
+      lastPollMessage: null,
+      lastPollSuccess:
+        prev.lastPollSuccess === false ? null : prev.lastPollSuccess,
+    }));
     await SphereSyncClient.clearErrorHistory();
     await refreshQueueStats();
     notify({
       title: "Error Log Cleared",
-      description: "Cleared Sphere sync error history.",
+      description: "Cleared Sphere sync error history and active alerts.",
+      variant: "info",
+      actor: "user",
+    });
+  };
+
+  const handleDismissFailedItem = async (id: number) => {
+    await SphereSyncClient.deleteQueueItem(id);
+    await refreshQueueStats();
+    notify({
+      title: "Queue Item Dismissed",
+      description: "Removed failed medication from sync queue.",
       variant: "info",
       actor: "user",
     });
@@ -291,6 +346,90 @@ export const Settings: React.FC<Props> = ({
       }
     } finally {
       setPollingBandaGo(false);
+    }
+  };
+
+  const handleSyncOutboundNow = async () => {
+    setSyncingOutbound(true);
+    try {
+      const res = await sendExtensionMessage<
+        unknown,
+        {
+          ok: boolean;
+          synced: number;
+          released: number;
+          failed: number;
+          message: string;
+        }
+      >("BANDAGO_SYNC_OUTBOUND_NOW");
+      await refreshQueueStats();
+
+      if (res.success && res.data) {
+        notify({
+          title: res.data.ok
+            ? "Website -> POS Sync Complete"
+            : "Website -> POS Attention",
+          description: res.data.message,
+          variant: res.data.ok ? "success" : "warning",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: "Outbound Sync Unavailable",
+          description:
+            res.error ||
+            "Reload the Chrome extension on an active browser window to execute writebacks.",
+          variant: "warning",
+          actor: "system",
+        });
+      }
+    } finally {
+      setSyncingOutbound(false);
+    }
+  };
+
+  const handleCopyDiagnostics = async () => {
+    const bundle = {
+      capturedAt: new Date().toISOString(),
+      config: {
+        enabled: sphereConfig.enabled,
+        endpointUrl: sphereConfig.endpointUrl,
+        apiKeyConfigured: Boolean(sphereConfig.apiKey),
+        apiKeySuffix: sphereConfig.apiKey
+          ? `***${sphereConfig.apiKey.slice(-4)}`
+          : null,
+        pharmacyId: sphereConfig.pharmacyId,
+        expectedTenantUU: sphereConfig.expectedTenantUU || null,
+        allowOutboundWriteback: sphereConfig.allowOutboundWriteback !== false,
+      },
+      serverPolicy,
+      outboundStatus,
+      queueStats,
+      diagnostics: {
+        lastSyncAt: diagnostics.lastSyncAt,
+        lastSyncError: diagnostics.lastSyncError,
+        lastPollAt: diagnostics.lastPollAt,
+        lastPollSuccess: diagnostics.lastPollSuccess,
+        lastPollMessage: diagnostics.lastPollMessage,
+        lastPollCount: diagnostics.lastPollCount,
+        recentErrors: diagnostics.errorHistory.slice(0, 10),
+      },
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
+      notify({
+        title: "Diagnostics Copied",
+        description: "Zero-PHI bridge diagnostics copied to clipboard.",
+        variant: "success",
+        actor: "user",
+      });
+    } catch {
+      notify({
+        title: "Copy Failed",
+        description: "Clipboard permission unavailable in this context.",
+        variant: "error",
+        actor: "system",
+      });
     }
   };
 
@@ -668,6 +807,141 @@ export const Settings: React.FC<Props> = ({
               pharmacy counters.
             </p>
           </div>
+
+          <div>
+            <label
+              htmlFor="sphere-tenant-uu"
+              className="block font-bold text-stone-700 mb-1"
+            >
+              Expected BandaGo Tenant UU (Optional AD_Client.UU Pin)
+            </label>
+            <input
+              id="sphere-tenant-uu"
+              type="text"
+              value={sphereConfig.expectedTenantUU || ""}
+              onChange={(e) =>
+                setSphereConfig((prev) => ({
+                  ...prev,
+                  expectedTenantUU: e.target.value,
+                }))
+              }
+              onBlur={() =>
+                handleUpdateSphereConfig(
+                  { expectedTenantUU: sphereConfig.expectedTenantUU },
+                  "Updated Expected BandaGo Tenant UU",
+                )
+              }
+              placeholder="Optional iDempiere AD_Client.UU"
+              className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl font-mono text-xs focus:bg-white focus:outline-none focus:border-emerald-600"
+            />
+            <p className="text-[11px] text-stone-500 mt-1">
+              Prevents accidental cross-clinic catalog or inventory syncs if
+              multiple BandaGo accounts are accessed.
+            </p>
+          </div>
+
+          <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-3 bg-stone-50 px-3.5 py-2.5 rounded-xl border border-stone-200">
+            <div>
+              <div className="font-bold text-stone-800 flex items-center gap-2">
+                <ArrowLeftRight className="w-3.5 h-3.5 text-emerald-700" />
+                Allow Website → POS Writebacks on This Workstation
+              </div>
+              <p className="text-[11px] text-stone-500">
+                Requires Sphere Admin policy to be set to{" "}
+                <span className="font-semibold text-stone-700">
+                  Automatic Two-Way Sync
+                </span>{" "}
+                before deductions run in BandaGo.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-stone-700">
+              <input
+                type="checkbox"
+                checked={sphereConfig.allowOutboundWriteback !== false}
+                onChange={(e) =>
+                  handleUpdateSphereConfig(
+                    { allowOutboundWriteback: e.target.checked },
+                    `Device outbound writebacks ${e.target.checked ? "enabled" : "disabled"}`,
+                  )
+                }
+                className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500"
+              />
+              <span>
+                {sphereConfig.allowOutboundWriteback !== false
+                  ? "Allowed"
+                  : "Blocked"}
+              </span>
+            </label>
+          </div>
+        </div>
+
+        {/* Two-Way Outbound Status Card */}
+        <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl p-3.5 text-xs space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-emerald-950">
+                Two-Way Sync Policy & Outbound Bridge
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  serverPolicy.outboundSyncMode === "AUTO_SYNC"
+                    ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                    : "bg-stone-100 text-stone-700 border border-stone-300"
+                }`}
+              >
+                {serverPolicy.outboundSyncMode === "AUTO_SYNC"
+                  ? "Auto Two-Way Sync"
+                  : "Manual Daily Export"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSyncOutboundNow}
+                disabled={syncingOutbound || !sphereConfig.enabled}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-emerald-100 text-emerald-900 font-semibold rounded-lg border border-emerald-300 transition disabled:opacity-50"
+              >
+                <ArrowLeftRight
+                  className={`w-3.5 h-3.5 ${syncingOutbound ? "animate-pulse" : ""}`}
+                />
+                {syncingOutbound
+                  ? "Pushing to POS..."
+                  : "Sync Website → POS Now"}
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyDiagnostics}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-stone-100 text-stone-700 font-semibold rounded-lg border border-stone-300 transition"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                Copy Diagnostics
+              </button>
+            </div>
+          </div>
+          <div className="text-[11px] text-stone-600 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              Last Writeback Run:{" "}
+              <strong className="text-stone-900">
+                {outboundStatus.lastRunAt
+                  ? new Date(outboundStatus.lastRunAt).toLocaleString()
+                  : "Not run yet"}
+              </strong>
+            </span>
+            {outboundStatus.message && (
+              <span
+                className={`font-mono ${
+                  outboundStatus.ok === false
+                    ? "text-rose-700 font-semibold"
+                    : "text-stone-700"
+                }`}
+              >
+                {outboundStatus.lastErrorCode
+                  ? `[${outboundStatus.lastErrorCode}] `
+                  : ""}
+                {outboundStatus.message}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Action Bar & Test Connection */}
@@ -718,13 +992,26 @@ export const Settings: React.FC<Props> = ({
 
           {testResult && (
             <div
-              className={`text-xs px-3 py-1.5 rounded-xl border font-medium ${
+              className={`text-xs px-3 py-1.5 rounded-xl border font-medium flex items-center justify-between gap-2 ${
                 testResult.ok
                   ? "bg-emerald-50 text-emerald-800 border-emerald-300"
                   : "bg-rose-50 text-rose-800 border-rose-300"
               }`}
             >
-              {testResult.message}
+              <span className="break-words">{testResult.message}</span>
+              <button
+                type="button"
+                onClick={() => setTestResult(null)}
+                className={`p-1 rounded-lg hover:bg-black/5 transition flex-shrink-0 cursor-pointer ${
+                  testResult.ok
+                    ? "text-emerald-700 hover:text-emerald-900"
+                    : "text-rose-700 hover:text-rose-900"
+                }`}
+                title="Dismiss message"
+                aria-label="Dismiss test result"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
             </div>
           )}
         </div>
@@ -805,7 +1092,8 @@ export const Settings: React.FC<Props> = ({
               </span>
               <span
                 className={`font-mono font-semibold truncate ${
-                  diagnostics.lastPollSuccess === false
+                  diagnostics.lastPollSuccess === false &&
+                  diagnostics.lastPollMessage
                     ? "text-amber-700"
                     : "text-stone-800"
                 }`}
@@ -813,9 +1101,13 @@ export const Settings: React.FC<Props> = ({
               >
                 {diagnostics.lastPollAt
                   ? `${new Date(diagnostics.lastPollAt).toLocaleTimeString()} (${
-                      diagnostics.lastPollSuccess
-                        ? `${diagnostics.lastPollCount} items`
-                        : "attention"
+                      diagnostics.lastPollSuccess === false &&
+                      diagnostics.lastPollMessage
+                        ? "attention"
+                        : diagnostics.lastPollSuccess === true ||
+                            diagnostics.lastPollCount > 0
+                          ? `${diagnostics.lastPollCount} items`
+                          : "idle"
                     })`
                   : "Awaiting first poll"}
               </span>
@@ -841,8 +1133,8 @@ export const Settings: React.FC<Props> = ({
                 </span>
                 <button
                   type="button"
-                  onClick={handleClearErrorHistory}
-                  className="text-[11px] font-semibold text-rose-700 hover:underline"
+                  onClick={handleDismissSyncError}
+                  className="text-[11px] font-semibold text-rose-700 hover:underline cursor-pointer"
                 >
                   Dismiss
                 </button>
@@ -900,9 +1192,22 @@ export const Settings: React.FC<Props> = ({
                           ({item.externalPosId.slice(0, 10)})
                         </span>
                       </span>
-                      <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-mono text-[10px] font-bold flex-shrink-0">
-                        {item.status} · Retry {item.retryCount}/5
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-mono text-[10px] font-bold flex-shrink-0">
+                          {item.status} · Retry {item.retryCount}/5
+                        </span>
+                        {item.id && (
+                          <button
+                            type="button"
+                            onClick={() => handleDismissFailedItem(item.id!)}
+                            className="text-stone-400 hover:text-rose-700 p-0.5 rounded transition cursor-pointer"
+                            title="Dismiss this failed item"
+                            aria-label={`Dismiss ${item.name} from sync queue`}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <span className="font-mono text-[10px] text-rose-700 break-words">
                       {item.lastError}

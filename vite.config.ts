@@ -281,11 +281,17 @@ export default defineConfig({
         sidepanel: resolve(__dirname, "sidepanel.html"),
         demo: resolve(__dirname, "demo.html"),
         background: resolve(__dirname, "src/background/service-worker.ts"),
+        "main-interceptor": resolve(__dirname, "src/content/main-interceptor.ts"),
+        "isolated-bridge": resolve(__dirname, "src/content/isolated-bridge.ts"),
       },
       output: {
         entryFileNames: (chunkInfo) => {
-          if (chunkInfo.name === "background") {
-            return "background.js";
+          if (
+            chunkInfo.name === "background" ||
+            chunkInfo.name === "main-interceptor" ||
+            chunkInfo.name === "isolated-bridge"
+          ) {
+            return `${chunkInfo.name}.js`;
           }
           return "assets/[name]-[hash].js";
         },

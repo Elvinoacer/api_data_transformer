@@ -31,7 +31,123 @@ export interface SphereProductSyncItem {
   strength?: string;
   description?: string;
   packSize?: string;
+  isActive?: boolean;
+  discontinued?: boolean;
+  tenantUU?: string | null;
+  externalWarehouseId?: string | null;
+  externalLocatorId?: string | null;
+  externalOrgId?: string | null;
+  uomSymbol?: string | null;
   _allLotsExpired?: boolean;
+}
+
+function parseIdempiereBool(value: unknown, defaultValue: boolean): boolean {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["y", "yes", "true", "1"].includes(normalized)) return true;
+    if (["n", "no", "false", "0"].includes(normalized)) return false;
+  }
+  return defaultValue;
+}
+
+function isQuarantineLocator(batch: Record<string, any>): boolean {
+  const loc = batch.M_Locator || batch.m_locator;
+  if (!loc || typeof loc !== "object") return false;
+  if (parseIdempiereBool(loc.IsActive ?? loc.isActive, true) === false) {
+    return true;
+  }
+  const locatorLabel = [
+    loc.Value,
+    loc.value,
+    loc.Name,
+    loc.name,
+    loc.M_Warehouse?.Name,
+    loc.m_warehouse?.name,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /\b(quarantine|expired|damaged|reject|return|waste)\b/i.test(locatorLabel);
+}
+
+function resolveSellableRetailPrice(raw: Record<string, any>): number {
+  const explicit =
+    raw.bh_sellprice ?? raw.BH_SellPrice ?? raw.price ?? raw.Price;
+  if (explicit !== undefined && explicit !== null) {
+    return Math.max(0, Number(explicit) || 0);
+  }
+
+  const list = raw.M_ProductPrices;
+  if (!Array.isArray(list) || list.length === 0) {
+    return 0;
+  }
+
+  const now = Date.now();
+  const candidates = list
+    .filter((entry: any) => {
+      if (!entry || typeof entry !== "object") return false;
+      const priceVal = Number(entry.PriceStd ?? entry.priceStd ?? 0);
+      if (!Number.isFinite(priceVal) || priceVal <= 0) return false;
+      if (parseIdempiereBool(entry.IsActive ?? entry.isActive, true) === false) {
+        return false;
+      }
+      const plv = entry.M_PriceList_Version;
+      if (plv && typeof plv === "object") {
+        if (parseIdempiereBool(plv.IsActive, true) === false) return false;
+        if (
+          plv.M_PriceList &&
+          parseIdempiereBool(plv.M_PriceList.IsSOPriceList, true) === false
+        ) {
+          return false;
+        }
+        if (plv.ValidFrom) {
+          const validMs = Date.parse(String(plv.ValidFrom));
+          if (!Number.isNaN(validMs) && validMs > now) return false;
+        }
+      }
+      return true;
+    })
+    .sort((a: any, b: any) => {
+      const aDefault = parseIdempiereBool(
+        a.M_PriceList_Version?.M_PriceList?.IsDefault,
+        false,
+      )
+        ? 1
+        : 0;
+      const bDefault = parseIdempiereBool(
+        b.M_PriceList_Version?.M_PriceList?.IsDefault,
+        false,
+      )
+        ? 1
+        : 0;
+      if (bDefault !== aDefault) return bDefault - aDefault;
+
+      const aMs = a.M_PriceList_Version?.ValidFrom
+        ? Date.parse(String(a.M_PriceList_Version.ValidFrom)) || 0
+        : 0;
+      const bMs = b.M_PriceList_Version?.ValidFrom
+        ? Date.parse(String(b.M_PriceList_Version.ValidFrom)) || 0
+        : 0;
+      return bMs - aMs;
+    });
+
+  if (candidates.length > 0) {
+    return Math.max(
+      0,
+      Number(candidates[0].PriceStd ?? candidates[0].priceStd ?? 0) || 0,
+    );
+  }
+
+  const fallback = list.find(
+    (p: any) => p && Number(p.PriceStd ?? p.priceStd) > 0,
+  );
+  return Math.max(
+    0,
+    Number(
+      fallback?.PriceStd ?? fallback?.priceStd ?? list[0]?.PriceStd ?? 0,
+    ) || 0,
+  );
 }
 
 export type SphereProductInput = SphereProductSyncItem;
@@ -451,6 +567,9 @@ export class BandaGoNormalizer {
       "BH_BuyPrice" in r ||
       "LastPurchasePrice" in r ||
       "M_ProductPrices" in r ||
+      "BH_Concept" in r ||
+      "bh_concept" in r ||
+      "Discontinued" in r ||
       "bh_hasexpiration" in r ||
       "BH_HasExpiration" in r ||
       "m_product_category" in r ||
@@ -493,12 +612,13 @@ export class BandaGoNormalizer {
 
     if (!externalPosId || !name) return null;
 
-    const rawActive = raw.IsActive ?? raw.isActive;
-    const isInactive =
-      rawActive === false ||
-      rawActive === 0 ||
-      (typeof rawActive === "string" &&
-        ["n", "false", "0"].includes(rawActive.trim().toLowerCase()));
+    const isActiveFlag = parseIdempiereBool(raw.IsActive ?? raw.isActive, true);
+    const isDiscontinued = parseIdempiereBool(
+      raw.Discontinued ?? raw.discontinued,
+      false,
+    );
+    const isSoldFlag = parseIdempiereBool(raw.IsSold ?? raw.isSold, true);
+    const isInactive = !isActiveFlag || isDiscontinued || !isSoldFlag;
 
     const genericName =
       raw.genericName ||
@@ -507,8 +627,9 @@ export class BandaGoNormalizer {
       raw.bh_genericname ||
       raw.BH_GenericName ||
       raw.bh_generic_name ||
-      raw.KnhtsConcept?.name ||
+      raw.BH_Concept?.BH_Display_Name ||
       raw.BH_Concept?.bh_display_name ||
+      raw.KnhtsConcept?.name ||
       null;
 
     // Extract Strength and Form from drug title
@@ -532,6 +653,7 @@ export class BandaGoNormalizer {
       raw.m_product_category?.name ||
         raw.M_Product_Category?.Name ||
         raw.KnhtsConcept?.name ||
+        raw.BH_Concept?.BH_Display_Name ||
         raw.category?.name ||
         raw.category ||
         "OTC",
@@ -586,6 +708,10 @@ export class BandaGoNormalizer {
     let nearestExpiryDate: string | null = null;
     const normalizedBatches: SphereBatchSyncItem[] = [];
     let allLotsExpired = false;
+    let externalWarehouseId: string | null =
+      raw.externalWarehouseId ?? raw.M_Warehouse?.UU ?? null;
+    let externalLocatorId: string | null =
+      raw.externalLocatorId ?? raw.M_Locator?.UU ?? null;
 
     const batches =
       raw.M_StorageOnHandList ||
@@ -600,6 +726,9 @@ export class BandaGoNormalizer {
       let hadPositiveBatchQty = false;
       for (const [idx, batch] of batches.entries()) {
         if (!batch || typeof batch !== "object") continue;
+        if (isQuarantineLocator(batch)) {
+          continue;
+        }
         const rawQty = batch.qtyOnHand ?? batch.QtyOnHand ?? 0;
         const qty = Math.floor(Number(rawQty));
         if (!Number.isFinite(qty) || qty <= 0) {
@@ -607,6 +736,21 @@ export class BandaGoNormalizer {
           continue;
         }
         hadPositiveBatchQty = true;
+
+        if (!externalLocatorId) {
+          const locUU = batch.M_Locator?.UU ?? batch.m_locator?.uu;
+          if (typeof locUU === "string" && locUU.trim()) {
+            externalLocatorId = locUU.trim();
+          }
+        }
+        if (!externalWarehouseId) {
+          const whUU =
+            batch.M_Locator?.M_Warehouse?.UU ??
+            batch.m_locator?.m_warehouse?.uu;
+          if (typeof whUU === "string" && whUU.trim()) {
+            externalWarehouseId = whUU.trim();
+          }
+        }
 
         const asi =
           batch.m_attributesetinstance ||
@@ -711,22 +855,8 @@ export class BandaGoNormalizer {
       );
     }
 
-    // Pricing parsing: supports BH_SellPrice as well as M_ProductPrices[0].PriceStd
-    const priceFromList =
-      Array.isArray(raw.M_ProductPrices) && raw.M_ProductPrices.length > 0
-        ? raw.M_ProductPrices.find(
-            (p: any) => p && Number(p.PriceStd ?? p.priceStd) > 0,
-          )?.PriceStd ?? raw.M_ProductPrices[0]?.PriceStd
-        : undefined;
-
-    const rawPrice =
-      raw.bh_sellprice ??
-      raw.BH_SellPrice ??
-      raw.price ??
-      raw.Price ??
-      priceFromList ??
-      0;
-    const price = Math.max(0, Number(rawPrice) || 0);
+    // Pricing parsing: supports BH_SellPrice as well as active retail M_ProductPrices by ValidFrom DESC
+    const price = resolveSellableRetailPrice(raw);
 
     const costPriceRaw =
       raw.bh_buyprice ??
@@ -749,9 +879,25 @@ export class BandaGoNormalizer {
         ? String(raw.packSize || raw.pack_size || raw.bh_packsize).trim()
         : undefined;
 
+    const tenantUU =
+      (raw.AD_Client?.UU ?? raw.ad_client?.uu ?? raw.tenantUU ?? null) || null;
+    const externalOrgId =
+      (raw.AD_Org?.UU ?? raw.ad_org?.uu ?? raw.externalOrgId ?? null) || null;
+    const uomSymbol =
+      (raw.C_UOM?.UOMSymbol ?? raw.C_UOM?.Name ?? raw.uomSymbol ?? null) ||
+      null;
+
     return {
       externalPosId,
-      sku: raw.value || raw.Value || raw.sku || raw.KnhtsConcept?.code || null,
+      sku:
+        raw.value ||
+        raw.Value ||
+        raw.sku ||
+        raw.SKU ||
+        raw.UPC ||
+        raw.KnhtsConcept?.code ||
+        raw.BH_Concept?.BH_ExternalID ||
+        null,
       name,
       genericName: genericName ? String(genericName).trim() : null,
       dosageForm: dosageForm ? String(dosageForm).trim() : null,
@@ -761,7 +907,7 @@ export class BandaGoNormalizer {
       buyPrice: costPrice !== null && !isNaN(costPrice) ? costPrice : null,
       costPrice: costPrice !== null && !isNaN(costPrice) ? costPrice : null,
       stock: Math.max(0, Math.floor(validStock)),
-      inStock: validStock > 0,
+      inStock: !isInactive && validStock > 0,
       requiresPrescription,
       imageUrl: resolvedCategory.defaultImage,
       nearestExpiryDate,
@@ -769,6 +915,13 @@ export class BandaGoNormalizer {
       strength,
       description,
       packSize,
+      isActive: !isInactive,
+      discontinued: isDiscontinued,
+      tenantUU,
+      externalWarehouseId,
+      externalLocatorId,
+      externalOrgId,
+      uomSymbol,
       ...(allLotsExpired ? { _allLotsExpired: true } : {}),
     };
   }
@@ -890,6 +1043,14 @@ export class BandaGoNormalizer {
     const resolvedExistingImage = existing.imageUrl || defaultCatImage;
     const resolvedIncomingImage = incoming.imageUrl || defaultCatImage;
 
+    const discontinued = Boolean(
+      existing.discontinued || incoming.discontinued,
+    );
+    const isActive =
+      !discontinued &&
+      existing.isActive !== false &&
+      incoming.isActive !== false;
+
     return {
       externalPosId: existing.externalPosId,
       name: incoming.name || existing.name,
@@ -902,8 +1063,8 @@ export class BandaGoNormalizer {
       price,
       buyPrice,
       costPrice,
-      stock: Math.max(0, Math.floor(stock)),
-      inStock: stock > 0,
+      stock: isActive ? Math.max(0, Math.floor(stock)) : 0,
+      inStock: isActive && stock > 0,
       requiresPrescription: Boolean(
         existing.requiresPrescription || incoming.requiresPrescription,
       ),
@@ -915,6 +1076,15 @@ export class BandaGoNormalizer {
       batches,
       description,
       packSize,
+      isActive,
+      discontinued,
+      tenantUU: incoming.tenantUU || existing.tenantUU || null,
+      externalWarehouseId:
+        incoming.externalWarehouseId || existing.externalWarehouseId || null,
+      externalLocatorId:
+        incoming.externalLocatorId || existing.externalLocatorId || null,
+      externalOrgId: incoming.externalOrgId || existing.externalOrgId || null,
+      uomSymbol: incoming.uomSymbol || existing.uomSymbol || null,
       ...(allLotsExpired ? { _allLotsExpired: true } : {}),
     };
   }
@@ -986,8 +1156,13 @@ export class BandaGoNormalizer {
         firstAsiPrice?.M_AttributeSetInstance?.PurchasePrice ??
         firstAsiPrice?.m_attributesetinstance?.purchasePrice;
 
+      const firstClient = batches.find((b) => b?.AD_Client?.UU)?.AD_Client;
+      const firstOrg = batches.find((b) => b?.AD_Org?.UU)?.AD_Org;
+
       candidates.push({
         ...product,
+        ...(firstClient && !product.AD_Client ? { AD_Client: firstClient } : {}),
+        ...(firstOrg && !product.AD_Org ? { AD_Org: firstOrg } : {}),
         ...(purchasePrice != null &&
         product.BH_BuyPrice == null &&
         product.LastPurchasePrice == null

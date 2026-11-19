@@ -15,6 +15,58 @@ export interface SyncConfig {
   apiKey: string;
   enabled: boolean;
   pharmacyId?: string;
+  allowOutboundWriteback?: boolean;
+  expectedTenantUU?: string;
+}
+
+export interface ServerSyncPolicy {
+  outboundSyncMode?: "MANUAL_EXPORT" | "AUTO_SYNC";
+  inboundEnabled?: boolean;
+  expectedTenantUU?: string | null;
+  outboundPollIntervalMinutes?: number;
+}
+
+export interface OutboundRunStatus {
+  lastRunAt: string | null;
+  ok: boolean | null;
+  mode?: string;
+  syncedCount?: number;
+  failedCount?: number;
+  pendingCount?: number;
+  message: string | null;
+  lastErrorCode?: string | null;
+}
+
+export interface TelemetryReportInput {
+  heartbeat?: Record<string, unknown>;
+  errors?: Array<{
+    direction?: "INBOUND" | "OUTBOUND";
+    source: string;
+    severity?: "CRITICAL" | "ERROR" | "WARNING";
+    code: string;
+    message: string;
+    remediation?: string;
+    externalPosId?: string;
+    productName?: string;
+    orderReference?: string;
+  }>;
+}
+
+/**
+ * Derives a sibling BandaGo integration URL (e.g. /outbound, /outbound/ack, /telemetry)
+ * cleanly from the configured /api/integrations/bandago/sync endpoint URL.
+ */
+export function deriveBandagoSiblingUrl(
+  syncEndpointUrl: string,
+  suffix: string,
+): string {
+  const cleanSuffix = suffix.startsWith("/") ? suffix : `/${suffix}`;
+  const trimmed = (syncEndpointUrl || "").trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (trimmed.endsWith("/sync")) {
+    return `${trimmed.slice(0, -5)}${cleanSuffix}`;
+  }
+  return `${trimmed}${cleanSuffix}`;
 }
 
 export interface FlushResult {
@@ -48,6 +100,11 @@ const STORAGE_KEYS = {
   API_KEY: "sphere_api_key",
   ENABLED: "sphere_sync_enabled",
   PHARMACY_ID: "sphere_pharmacy_id",
+  ALLOW_OUTBOUND: "sphere_allow_outbound_writeback",
+  EXPECTED_TENANT_UU: "sphere_expected_tenant_uu",
+  LAST_TENANT_UU: "sphere_last_tenant_uu",
+  SERVER_POLICY: "sphere_server_policy",
+  OUTBOUND_STATUS: "sphere_outbound_status",
   LAST_SYNC_AT: "sphere_last_sync_at",
   LAST_SYNC_ERROR: "sphere_last_sync_error",
   LAST_POLL_AT: "sphere_last_poll_at",
@@ -73,6 +130,8 @@ export class SphereSyncClient {
           STORAGE_KEYS.API_KEY,
           STORAGE_KEYS.ENABLED,
           STORAGE_KEYS.PHARMACY_ID,
+          STORAGE_KEYS.ALLOW_OUTBOUND,
+          STORAGE_KEYS.EXPECTED_TENANT_UU,
         ]);
 
         return {
@@ -80,14 +139,22 @@ export class SphereSyncClient {
           apiKey: data[STORAGE_KEYS.API_KEY] || "",
           enabled: Boolean(data[STORAGE_KEYS.ENABLED]),
           pharmacyId: data[STORAGE_KEYS.PHARMACY_ID] || "DEFAULT_STORE",
+          allowOutboundWriteback: data[STORAGE_KEYS.ALLOW_OUTBOUND] !== false,
+          expectedTenantUU: data[STORAGE_KEYS.EXPECTED_TENANT_UU] || "",
         };
       } else if (typeof localStorage !== "undefined") {
+        const allowOutboundRaw = localStorage.getItem(
+          STORAGE_KEYS.ALLOW_OUTBOUND,
+        );
         return {
           endpointUrl: localStorage.getItem(STORAGE_KEYS.ENDPOINT_URL) || "",
           apiKey: localStorage.getItem(STORAGE_KEYS.API_KEY) || "",
           enabled: localStorage.getItem(STORAGE_KEYS.ENABLED) === "true",
           pharmacyId:
             localStorage.getItem(STORAGE_KEYS.PHARMACY_ID) || "DEFAULT_STORE",
+          allowOutboundWriteback: allowOutboundRaw !== "false",
+          expectedTenantUU:
+            localStorage.getItem(STORAGE_KEYS.EXPECTED_TENANT_UU) || "",
         };
       }
     } catch (err) {
@@ -99,6 +166,8 @@ export class SphereSyncClient {
       apiKey: "",
       enabled: false,
       pharmacyId: "DEFAULT_STORE",
+      allowOutboundWriteback: true,
+      expectedTenantUU: "",
     };
   }
 
@@ -114,6 +183,8 @@ export class SphereSyncClient {
       [STORAGE_KEYS.API_KEY]: merged.apiKey,
       [STORAGE_KEYS.ENABLED]: merged.enabled,
       [STORAGE_KEYS.PHARMACY_ID]: merged.pharmacyId,
+      [STORAGE_KEYS.ALLOW_OUTBOUND]: merged.allowOutboundWriteback !== false,
+      [STORAGE_KEYS.EXPECTED_TENANT_UU]: merged.expectedTenantUU || "",
     };
 
     try {
@@ -137,10 +208,16 @@ export class SphereSyncClient {
   static async enqueue(
     items: SphereProductInput[],
     trigger: string = "BACKGROUND_POLL",
+    tenantUU?: string | null,
   ): Promise<number> {
+    if (tenantUU && typeof chrome !== "undefined" && chrome.storage?.local) {
+      await chrome.storage.local
+        .set({ [STORAGE_KEYS.LAST_TENANT_UU]: tenantUU })
+        .catch(() => {});
+    }
     const count = await SyncQueueManager.enqueue(items);
     // Trigger immediate background flush (non-blocking)
-    this.flushQueue(trigger).catch((err) => {
+    this.flushQueue(trigger, tenantUU).catch((err) => {
       console.error("[SphereSyncClient] Background flush failed:", err);
     });
     return count;
@@ -153,6 +230,7 @@ export class SphereSyncClient {
    */
   static async flushQueue(
     trigger: string = "BACKGROUND_POLL",
+    tenantUUOverride?: string | null,
   ): Promise<FlushResult> {
     if (this.isFlushing) {
       return { synced: 0, failed: 0 };
@@ -211,6 +289,10 @@ export class SphereSyncClient {
             (p) => p.payload as SphereProductSyncItem,
           );
           const coalescedItems = coalesceSyncItems(payloadItems);
+          const batchTenantUU =
+            tenantUUOverride ||
+            coalescedItems.find((i) => Boolean(i.tenantUU))?.tenantUU ||
+            undefined;
 
           const response = await fetch(config.endpointUrl, {
             method: "POST",
@@ -224,6 +306,7 @@ export class SphereSyncClient {
               source: "BANDAGO_POS",
               trigger: trigger || "BACKGROUND_POLL",
               pharmacyId: config.pharmacyId,
+              ...(batchTenantUU ? { tenantUU: batchTenantUU } : {}),
               timestamp: new Date().toISOString(),
               items: coalescedItems,
             }),
@@ -243,6 +326,13 @@ export class SphereSyncClient {
             } catch {
               // Ignore if response has no JSON body
             }
+          }
+
+          if (resData && resData.policySummary) {
+            await this.saveServerPolicy({
+              outboundSyncMode: resData.policySummary.outboundSyncMode,
+              inboundEnabled: !resData.paused,
+            }).catch(() => {});
           }
 
           if (resData && resData.success === false) {
@@ -607,6 +697,27 @@ export class SphereSyncClient {
   }
 
   /**
+   * Clears active synchronization and polling error banners from UI and storage.
+   */
+  static async dismissActiveErrors(): Promise<void> {
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.LAST_SYNC_ERROR]: "",
+          [STORAGE_KEYS.LAST_POLL_MESSAGE]: "",
+          [STORAGE_KEYS.LAST_POLL_SUCCESS]: null,
+        });
+      } else if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(STORAGE_KEYS.LAST_SYNC_ERROR);
+        localStorage.removeItem(STORAGE_KEYS.LAST_POLL_MESSAGE);
+        localStorage.removeItem(STORAGE_KEYS.LAST_POLL_SUCCESS);
+      }
+    } catch {
+      // Ignore storage error
+    }
+  }
+
+  /**
    * Clears stored error history and active sync error banner.
    */
   static async clearErrorHistory(): Promise<void> {
@@ -615,10 +726,14 @@ export class SphereSyncClient {
         await chrome.storage.local.set({
           [STORAGE_KEYS.ERROR_LOG]: [],
           [STORAGE_KEYS.LAST_SYNC_ERROR]: "",
+          [STORAGE_KEYS.LAST_POLL_MESSAGE]: "",
+          [STORAGE_KEYS.LAST_POLL_SUCCESS]: null,
         });
       } else if (typeof localStorage !== "undefined") {
         localStorage.removeItem(STORAGE_KEYS.ERROR_LOG);
         localStorage.removeItem(STORAGE_KEYS.LAST_SYNC_ERROR);
+        localStorage.removeItem(STORAGE_KEYS.LAST_POLL_MESSAGE);
+        localStorage.removeItem(STORAGE_KEYS.LAST_POLL_SUCCESS);
       }
     } catch {
       // Ignore storage error
@@ -648,5 +763,163 @@ export class SphereSyncClient {
    */
   static async clearQueue(): Promise<void> {
     await SyncQueueManager.clearQueue();
+  }
+
+  /**
+   * Deletes a single item by id from the sync queue.
+   */
+  static async deleteQueueItem(id: number): Promise<void> {
+    await SyncQueueManager.deleteItem(id);
+  }
+
+  static async getOutboundStatus(): Promise<OutboundRunStatus> {
+    const empty: OutboundRunStatus = {
+      lastRunAt: null,
+      ok: null,
+      message: null,
+      lastErrorCode: null,
+    };
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        const data = await chrome.storage.local.get([
+          STORAGE_KEYS.OUTBOUND_STATUS,
+        ]);
+        const val = data[STORAGE_KEYS.OUTBOUND_STATUS];
+        return val && typeof val === "object" ? { ...empty, ...val } : empty;
+      } else if (typeof localStorage !== "undefined") {
+        const raw = localStorage.getItem(STORAGE_KEYS.OUTBOUND_STATUS);
+        return raw ? { ...empty, ...JSON.parse(raw) } : empty;
+      }
+    } catch {}
+    return empty;
+  }
+
+  static async saveOutboundStatus(
+    updates: Partial<OutboundRunStatus>,
+  ): Promise<OutboundRunStatus> {
+    const current = await this.getOutboundStatus();
+    const merged: OutboundRunStatus = { ...current, ...updates };
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.OUTBOUND_STATUS]: merged,
+        });
+      } else if (typeof localStorage !== "undefined") {
+        localStorage.setItem(
+          STORAGE_KEYS.OUTBOUND_STATUS,
+          JSON.stringify(merged),
+        );
+      }
+    } catch {}
+    return merged;
+  }
+
+  static async getServerPolicy(): Promise<ServerSyncPolicy> {
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        const data = await chrome.storage.local.get([
+          STORAGE_KEYS.SERVER_POLICY,
+        ]);
+        const val = data[STORAGE_KEYS.SERVER_POLICY];
+        return val && typeof val === "object" ? val : {};
+      } else if (typeof localStorage !== "undefined") {
+        const raw = localStorage.getItem(STORAGE_KEYS.SERVER_POLICY);
+        return raw ? JSON.parse(raw) : {};
+      }
+    } catch {}
+    return {};
+  }
+
+  static async saveServerPolicy(
+    updates: Partial<ServerSyncPolicy>,
+  ): Promise<ServerSyncPolicy> {
+    const current = await this.getServerPolicy();
+    const merged: ServerSyncPolicy = { ...current, ...updates };
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.SERVER_POLICY]: merged,
+        });
+      } else if (typeof localStorage !== "undefined") {
+        localStorage.setItem(
+          STORAGE_KEYS.SERVER_POLICY,
+          JSON.stringify(merged),
+        );
+      }
+    } catch {}
+    return merged;
+  }
+
+  /**
+   * Posts strictly Zero-PHI structural heartbeats and error summaries to Sphere /telemetry
+   * and caches the live server policy returned by Sphere.
+   */
+  static async reportTelemetry(input: TelemetryReportInput): Promise<{
+    ok: boolean;
+    policy?: ServerSyncPolicy;
+    pendingOutboundCount?: number;
+  }> {
+    const config = await this.getConfig();
+    if (!config.enabled || !config.endpointUrl || !config.apiKey) {
+      return { ok: false };
+    }
+
+    const telemetryUrl = deriveBandagoSiblingUrl(
+      config.endpointUrl,
+      "/telemetry",
+    );
+    if (!telemetryUrl) return { ok: false };
+
+    let queueStats: QueueStats = { pending: 0, syncing: 0, failed: 0, total: 0 };
+    try {
+      queueStats = await SyncQueueManager.getStats();
+    } catch {}
+
+    let lastTenantUU: string | null = null;
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        const d = await chrome.storage.local.get([STORAGE_KEYS.LAST_TENANT_UU]);
+        lastTenantUU = d[STORAGE_KEYS.LAST_TENANT_UU] || null;
+      }
+    } catch {}
+
+    const manifestVersion =
+      typeof chrome !== "undefined" && chrome.runtime?.getManifest
+        ? chrome.runtime.getManifest().version
+        : null;
+
+    try {
+      const res = await fetch(telemetryUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          heartbeat: {
+            extensionVersion: manifestVersion,
+            pharmacyId: config.pharmacyId || "DEFAULT_STORE",
+            tenantUU: lastTenantUU,
+            inboundQueuePending: queueStats.pending,
+            inboundQueueFailed: queueStats.failed,
+            ...(input.heartbeat || {}),
+          },
+          errors: input.errors || [],
+        }),
+      });
+
+      if (!res.ok) return { ok: false };
+      const json = await res.json().catch(() => ({}));
+      if (json?.policy) {
+        await this.saveServerPolicy(json.policy).catch(() => {});
+      }
+      return {
+        ok: Boolean(json?.ok),
+        policy: json?.policy,
+        pendingOutboundCount: json?.pendingOutboundCount,
+      };
+    } catch {
+      return { ok: false };
+    }
   }
 }

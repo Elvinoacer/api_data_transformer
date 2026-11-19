@@ -71,18 +71,57 @@ export class BandaGoActivePoller {
    * to inherit existing authenticated session cookies & tenant context.
    */
   static async pollActiveTabs(): Promise<PollResult> {
-    const finishPoll = async (res: PollResult): Promise<PollResult> => {
+    const finishPoll = async (
+      res: PollResult,
+      errorCode?: string,
+      tenantUU?: string | null,
+    ): Promise<PollResult> => {
       await SphereSyncClient.recordPollStatus(res).catch(() => {});
+      await SphereSyncClient.reportTelemetry({
+        heartbeat: {
+          bandagoTabOpen:
+            errorCode !== "NO_POS_TAB" &&
+            !res.message.includes("No active go.bandahealth.org tab"),
+          tenantUU: tenantUU ?? null,
+          lastInboundPollAt: new Date().toISOString(),
+          lastInboundPollOk: res.success,
+          lastInboundPollMessage: res.message,
+        },
+        errors:
+          !res.success && errorCode
+            ? [
+                {
+                  direction: "INBOUND",
+                  source: "BANDAGO_POLLER",
+                  severity:
+                    errorCode === "AUTH_EXPIRED" ||
+                    errorCode === "TENANT_MISMATCH"
+                      ? "CRITICAL"
+                      : errorCode === "NETWORK_TIMEOUT" ||
+                          errorCode === "NO_POS_TAB"
+                        ? "WARNING"
+                        : "ERROR",
+                  code: errorCode,
+                  message: res.message,
+                },
+              ]
+            : undefined,
+      }).catch(() => {});
       return res;
     };
 
     const config = await SphereSyncClient.getConfig();
     if (!config.enabled) {
-      return finishPoll({
+      await SphereSyncClient.recordPollStatus({
         success: false,
         count: 0,
         message: "Sphere sync is currently disabled in settings",
-      });
+      }).catch(() => {});
+      return {
+        success: false,
+        count: 0,
+        message: "Sphere sync is currently disabled in settings",
+      };
     }
 
     if (typeof chrome === "undefined" || !chrome.tabs || !chrome.scripting) {
@@ -96,11 +135,14 @@ export class BandaGoActivePoller {
     // Locate open BandaGo POS tabs
     const tabs = await chrome.tabs.query({ url: "*://go.bandahealth.org/*" });
     if (tabs.length === 0 || !tabs[0].id) {
-      return finishPoll({
-        success: false,
-        count: 0,
-        message: "No active go.bandahealth.org tab found",
-      });
+      return finishPoll(
+        {
+          success: false,
+          count: 0,
+          message: "No active go.bandahealth.org tab found",
+        },
+        "NO_POS_TAB",
+      );
     }
 
     const tabId = tabs[0].id;
@@ -124,6 +166,13 @@ export class BandaGoActivePoller {
           Results {
             QtyOnHand
             UU
+            AD_Client {
+              UU
+            }
+            AD_Org {
+              UU
+              Name
+            }
             M_AttributeSetInstance {
               UU
               GuaranteeDate
@@ -135,6 +184,7 @@ export class BandaGoActivePoller {
             M_Locator {
               UU
               Value
+              IsActive
               M_Warehouse {
                 UU
                 Name
@@ -144,22 +194,25 @@ export class BandaGoActivePoller {
               UU
               Name
               Value
+              SKU
+              UPC
               Description
+              BH_BuyPrice
               BH_SellPrice
               BH_PriceMargin
-              BH_HasExpiration
-              HasExpirationDate
               IsActive
-              BH_SoonToExpireDays {
-                Name
-                UU
+              IsStocked
+              IsSold
+              Discontinued
+              ProductType {
                 Value
               }
               C_UOM {
                 StdPrecision
                 UU
+                Name
+                UOMSymbol
               }
-              Created
               M_AttributeSet {
                 IsGuaranteeDate
                 IsLot
@@ -168,11 +221,23 @@ export class BandaGoActivePoller {
                 UU
                 Name
               }
-              KnhtsConcept {
+              BH_Concept {
                 UU
-                name
-                code
-                type
+                BH_Display_Name
+                BH_ExternalID
+              }
+              M_ProductPrices {
+                PriceStd
+                PriceList
+                IsActive
+                M_PriceList_Version {
+                  ValidFrom
+                  IsActive
+                  M_PriceList {
+                    IsSOPriceList
+                    IsDefault
+                  }
+                }
               }
             }
           }
@@ -193,27 +258,59 @@ export class BandaGoActivePoller {
             UU
             Name
             Value
+            SKU
+            UPC
             Description
             BH_BuyPrice
             BH_SellPrice
             BH_PriceMargin
-            BH_HasExpiration
-            HasExpirationDate
             IsActive
+            IsStocked
+            IsSold
+            Discontinued
             TotalQuantity
             LastPurchasePrice
-            Created
-            bh_reorder_level
-            bh_reorder_quantity
+            ProductType {
+              Value
+            }
+            AD_Client {
+              UU
+            }
+            AD_Org {
+              UU
+              Name
+            }
+            C_UOM {
+              StdPrecision
+              UU
+              Name
+              UOMSymbol
+            }
+            M_AttributeSet {
+              IsGuaranteeDate
+              IsLot
+            }
             M_Product_Category {
               UU
               Name
             }
-            KnhtsConcept {
+            BH_Concept {
               UU
-              name
-              code
-              type
+              BH_Display_Name
+              BH_ExternalID
+            }
+            M_ProductPrices {
+              PriceStd
+              PriceList
+              IsActive
+              M_PriceList_Version {
+                ValidFrom
+                IsActive
+                M_PriceList {
+                  IsSOPriceList
+                  IsDefault
+                }
+              }
             }
           }
         }
@@ -400,15 +497,70 @@ export class BandaGoActivePoller {
               return await executeGql(gqlEndpoint, storageQuery);
             }
 
-            // BandaGo iDempiere Inventory Polling
+            // BandaGo iDempiere Inventory Polling (0-indexed pagination per idemp-plugins)
+            const MAX_PAGES = 20;
+            const leanStorageQuery = `
+              query M_StorageOnHandForInventoryList($Page: Int, $Size: Int, $Filter: String) {
+                M_StorageOnHandGet(Page: $Page, Size: $Size, Filter: $Filter) {
+                  PagingInfo { Page PageSize TotalCount TotalPages }
+                  Results {
+                    QtyOnHand
+                    UU
+                    AD_Client { UU }
+                    M_AttributeSetInstance { UU GuaranteeDate Lot SerNo PurchasePrice }
+                    M_Locator { UU Value M_Warehouse { UU Name } }
+                    M_Product {
+                      UU
+                      Name
+                      Value
+                      BH_BuyPrice
+                      BH_SellPrice
+                      IsActive
+                      IsStocked
+                      M_Product_Category { UU Name }
+                    }
+                  }
+                }
+              }
+            `;
+            const leanProductQuery = `
+              query M_ProductForProductListPage($Filter: String, $Page: Int, $Size: Int, $Sort: String) {
+                M_ProductGet(Filter: $Filter, Page: $Page, Size: $Size, Sort: $Sort) {
+                  PagingInfo { Page PageSize TotalCount TotalPages }
+                  Results {
+                    UU
+                    Name
+                    Value
+                    BH_BuyPrice
+                    BH_SellPrice
+                    IsActive
+                    IsStocked
+                    TotalQuantity
+                    AD_Client { UU }
+                    M_Product_Category { UU Name }
+                  }
+                }
+              }
+            `;
+
+            const isSubfieldValidationError = (res: any, rootField: string): boolean => {
+              if (!Array.isArray(res?.errors) || res.errors.length === 0) return false;
+              const msg = res.errors.map((e: any) => String(e?.message || "")).join(" ");
+              if (msg.includes(`Cannot query field ${rootField}`) || msg.includes(`Cannot query field '${rootField}'`)) {
+                return false;
+              }
+              return /Cannot query field|Validation error/i.test(msg);
+            };
+
             let endpointToUse = gqlEndpoint;
-            let storageRes: any = await executeGql(endpointToUse, storageQuery, {
-              Page: 1,
+            let activeStorageQuery = storageQuery;
+            let storageRes: any = await executeGql(endpointToUse, activeStorageQuery, {
+              Page: 0,
               Size: 500,
               Filter: JSON.stringify({}),
             });
 
-            // Fallback to alternate trailing slash on 404, non-JSON SPA response, or error
+            // Fallback to alternate trailing slash on 404, non-JSON SPA response, or HTTP error
             if (
               storageRes?.status === 404 ||
               storageRes?.nonJson ||
@@ -417,8 +569,8 @@ export class BandaGoActivePoller {
               const altEndpoint = endpointToUse.endsWith("/")
                 ? endpointToUse.slice(0, -1)
                 : `${endpointToUse}/`;
-              const altRes = await executeGql(altEndpoint, storageQuery, {
-                Page: 1,
+              const altRes = await executeGql(altEndpoint, activeStorageQuery, {
+                Page: 0,
                 Size: 500,
                 Filter: JSON.stringify({}),
               });
@@ -428,19 +580,33 @@ export class BandaGoActivePoller {
               }
             }
 
+            // If optional subfield was rejected by older server build, retry lean query
+            if (isSubfieldValidationError(storageRes, "M_StorageOnHandGet")) {
+              const leanRes = await executeGql(endpointToUse, leanStorageQuery, {
+                Page: 0,
+                Size: 500,
+                Filter: JSON.stringify({}),
+              });
+              if (leanRes?.data?.M_StorageOnHandGet) {
+                activeStorageQuery = leanStorageQuery;
+                storageRes = leanRes;
+              }
+            }
+
             // If credentials expired (HTTP 401), exit early immediately
             if (storageRes?.status === 401) {
               return storageRes;
             }
 
-            // Multi-page pagination support for storage on hand (up to 10 pages / 5000 records)
-            if (storageRes?.data?.M_StorageOnHandGet?.PagingInfo?.TotalPages > 1) {
-              const totalPages = Math.min(
-                storageRes.data.M_StorageOnHandGet.PagingInfo.TotalPages,
-                10,
-              );
-              for (let page = 2; page <= totalPages; page++) {
-                const nextPage = await executeGql(endpointToUse, storageQuery, {
+            // Adaptive pagination: handles both 0-indexed (live BandaGo: Page 0..N-1) and 1-indexed mocks (Page 1..N)
+            const storagePaging = storageRes?.data?.M_StorageOnHandGet?.PagingInfo;
+            if (storagePaging?.TotalPages > 1) {
+              const totalPages = Math.min(storagePaging.TotalPages, MAX_PAGES);
+              const firstPageIndex = typeof storagePaging.Page === "number" ? storagePaging.Page : 0;
+              const nextStart = firstPageIndex === 0 ? 1 : firstPageIndex + 1;
+              const lastPage = firstPageIndex === 0 ? totalPages - 1 : totalPages;
+              for (let page = nextStart; page <= lastPage; page++) {
+                const nextPage = await executeGql(endpointToUse, activeStorageQuery, {
                   Page: page,
                   Size: 500,
                   Filter: JSON.stringify({}),
@@ -456,8 +622,9 @@ export class BandaGoActivePoller {
             // Fetch catalog product list even if storage query encountered errors
             let productRes: any = null;
             if (productQuery) {
-              productRes = await executeGql(endpointToUse, productQuery, {
-                Page: 1,
+              let activeProductQuery = productQuery;
+              productRes = await executeGql(endpointToUse, activeProductQuery, {
+                Page: 0,
                 Size: 500,
                 Filter: JSON.stringify({}),
               });
@@ -472,8 +639,8 @@ export class BandaGoActivePoller {
                 const altEndpoint = endpointToUse.endsWith("/")
                   ? endpointToUse.slice(0, -1)
                   : `${endpointToUse}/`;
-                const altRes = await executeGql(altEndpoint, productQuery, {
-                  Page: 1,
+                const altRes = await executeGql(altEndpoint, activeProductQuery, {
+                  Page: 0,
                   Size: 500,
                   Filter: JSON.stringify({}),
                 });
@@ -483,14 +650,26 @@ export class BandaGoActivePoller {
                 }
               }
 
-              // Multi-page pagination support for product catalog
-              if (productRes?.data?.M_ProductGet?.PagingInfo?.TotalPages > 1) {
-                const totalPages = Math.min(
-                  productRes.data.M_ProductGet.PagingInfo.TotalPages,
-                  10,
-                );
-                for (let page = 2; page <= totalPages; page++) {
-                  const nextPage = await executeGql(endpointToUse, productQuery, {
+              if (isSubfieldValidationError(productRes, "M_ProductGet")) {
+                const leanProdRes = await executeGql(endpointToUse, leanProductQuery, {
+                  Page: 0,
+                  Size: 500,
+                  Filter: JSON.stringify({}),
+                });
+                if (leanProdRes?.data?.M_ProductGet) {
+                  activeProductQuery = leanProductQuery;
+                  productRes = leanProdRes;
+                }
+              }
+
+              const prodPaging = productRes?.data?.M_ProductGet?.PagingInfo;
+              if (prodPaging?.TotalPages > 1) {
+                const totalPages = Math.min(prodPaging.TotalPages, MAX_PAGES);
+                const firstPageIndex = typeof prodPaging.Page === "number" ? prodPaging.Page : 0;
+                const nextStart = firstPageIndex === 0 ? 1 : firstPageIndex + 1;
+                const lastPage = firstPageIndex === 0 ? totalPages - 1 : totalPages;
+                for (let page = nextStart; page <= lastPage; page++) {
+                  const nextPage = await executeGql(endpointToUse, activeProductQuery, {
                     Page: page,
                     Size: 500,
                     Filter: JSON.stringify({}),
@@ -544,11 +723,21 @@ export class BandaGoActivePoller {
       }
 
       if (response.error) {
-        return finishPoll({
-          success: false,
-          count: 0,
-          message: `In-tab query failed: ${response.error}`,
-        });
+        const errText = String(response.error);
+        const errorCode =
+          response.status === 401 || /401|unauth|expired/i.test(errText)
+            ? "AUTH_EXPIRED"
+            : /timed out|timeout|network/i.test(errText)
+              ? "NETWORK_TIMEOUT"
+              : "INBOUND_ITEM_FAILED";
+        return finishPoll(
+          {
+            success: false,
+            count: 0,
+            message: `In-tab query failed: ${response.error}`,
+          },
+          errorCode,
+        );
       }
 
       if (
@@ -559,11 +748,14 @@ export class BandaGoActivePoller {
         const errDetails = response.errors
           .map((e: any) => e.message || "GraphQL error")
           .join("; ");
-        return finishPoll({
-          success: false,
-          count: 0,
-          message: `In-tab GraphQL error: ${errDetails}`,
-        });
+        return finishPoll(
+          {
+            success: false,
+            count: 0,
+            message: `In-tab GraphQL error: ${errDetails}`,
+          },
+          "GRAPHQL_SCHEMA_ERROR",
+        );
       }
 
       const products = response?.data?.products;
@@ -574,20 +766,55 @@ export class BandaGoActivePoller {
               .filter((p): p is NonNullable<typeof p> => p !== null)
           : BandaGoNormalizer.extractProductsFromPayload(response);
 
-      if (normalized.length > 0) {
-        await SphereSyncClient.enqueue(normalized, "BACKGROUND_POLL");
-        return finishPoll({
-          success: true,
-          count: normalized.length,
-          message: `Successfully captured and enqueued ${normalized.length} products from BandaGo`,
-        });
+      const detectedTenantUU =
+        normalized.find((item) => Boolean(item.tenantUU))?.tenantUU ?? null;
+      const expectedTenantUU = config.expectedTenantUU?.trim();
+      if (
+        expectedTenantUU &&
+        detectedTenantUU &&
+        expectedTenantUU !== detectedTenantUU
+      ) {
+        return finishPoll(
+          {
+            success: false,
+            count: 0,
+            message: `Tenant mismatch: expected BandaGo AD_Client_UU ${expectedTenantUU}, got ${detectedTenantUU}`,
+          },
+          "TENANT_MISMATCH",
+          detectedTenantUU,
+        );
       }
 
-      return finishPoll({
-        success: true,
-        count: 0,
-        message: "BandaGo returned 0 products",
-      });
+      if (normalized.length > 0) {
+        if (detectedTenantUU) {
+          await SphereSyncClient.enqueue(
+            normalized,
+            "BACKGROUND_POLL",
+            detectedTenantUU,
+          );
+        } else {
+          await SphereSyncClient.enqueue(normalized, "BACKGROUND_POLL");
+        }
+        return finishPoll(
+          {
+            success: true,
+            count: normalized.length,
+            message: `Successfully captured and enqueued ${normalized.length} products from BandaGo`,
+          },
+          undefined,
+          detectedTenantUU,
+        );
+      }
+
+      return finishPoll(
+        {
+          success: true,
+          count: 0,
+          message: "BandaGo returned 0 products",
+        },
+        undefined,
+        detectedTenantUU,
+      );
     } catch (err: any) {
       console.warn("[BandaGo Poller execution failed]:", err);
       return finishPoll({

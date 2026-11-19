@@ -1092,4 +1092,44 @@ describe("SphereSyncClient & SyncQueueManager", () => {
     expect(clearedDiag.errorHistory).toEqual([]);
     expect(clearedDiag.lastSyncError).toBeNull();
   });
+
+  it("dismissActiveErrors clears active sync error and poller error while preserving rolling error log", async () => {
+    // Record a poller failure
+    await SphereSyncClient.recordPollStatus({
+      success: false,
+      count: 0,
+      message: "In-tab GraphQL error: Unauthorized",
+    });
+
+    let diag = await SphereSyncClient.getDiagnostics();
+    expect(diag.lastPollSuccess).toBe(false);
+    expect(diag.lastPollMessage).toBe("In-tab GraphQL error: Unauthorized");
+    expect(diag.errorHistory.length).toBeGreaterThan(0);
+
+    // Dismiss active errors
+    await SphereSyncClient.dismissActiveErrors();
+
+    const dismissedDiag = await SphereSyncClient.getDiagnostics();
+    expect(dismissedDiag.lastSyncError).toBeNull();
+    expect(dismissedDiag.lastPollMessage).toBeNull();
+    expect(dismissedDiag.lastPollSuccess).toBeNull();
+    // Rolling error history log remains preserved
+    expect(dismissedDiag.errorHistory.length).toBeGreaterThan(0);
+
+    // clearErrorHistory clears rolling error history as well as active errors
+    await SphereSyncClient.clearErrorHistory();
+    const fullyCleared = await SphereSyncClient.getDiagnostics();
+    expect(fullyCleared.errorHistory).toEqual([]);
+    expect(fullyCleared.lastPollMessage).toBeNull();
+    expect(fullyCleared.lastPollSuccess).toBeNull();
+    expect(fullyCleared.lastSyncError).toBeNull();
+  });
+
+  it("deleteQueueItem removes individual failed or problem item from sync queue", async () => {
+    const deleteSpy = vi.fn().mockResolvedValue(undefined);
+    (db.sync_queue as any).delete = deleteSpy;
+
+    await SphereSyncClient.deleteQueueItem(123);
+    expect(deleteSpy).toHaveBeenCalledWith(123);
+  });
 });
