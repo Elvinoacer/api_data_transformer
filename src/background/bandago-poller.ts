@@ -8,6 +8,25 @@ export interface PollResult {
   message: string;
 }
 
+function selectBestBandaGoTab(tabs: chrome.tabs.Tab[]): chrome.tabs.Tab | null {
+  const valid = tabs.filter((t) => typeof t.id === "number");
+  if (valid.length === 0) return null;
+  const nonDiscarded = valid.filter((t) => !t.discarded);
+  const pool = nonDiscarded.length > 0 ? nonDiscarded : valid;
+  return [...pool].sort((a, b) => {
+    const score = (t: chrome.tabs.Tab) => {
+      const u = (t.url || "").toLowerCase();
+      let s = 0;
+      if (!/\/(login|signin|auth)\b/.test(u)) s += 100;
+      if (/\/(products|inventory|dispense|sales)/.test(u)) s += 50;
+      if (t.active) s += 20;
+      if (t.status === "complete") s += 10;
+      return s;
+    };
+    return score(b) - score(a);
+  })[0];
+}
+
 export class BandaGoActivePoller {
   public static readonly ALARM_NAME = "BANDAGO_ACTIVE_POLL_ALARM";
   public static readonly POLL_INTERVAL_MINUTES = 10;
@@ -132,9 +151,10 @@ export class BandaGoActivePoller {
       });
     }
 
-    // Locate open BandaGo POS tabs
+    // Locate open BandaGo POS tabs (preferring loaded /products or /inventory tabs over /login)
     const tabs = await chrome.tabs.query({ url: "*://go.bandahealth.org/*" });
-    if (tabs.length === 0 || !tabs[0].id) {
+    const bestTab = selectBestBandaGoTab(tabs);
+    if (!bestTab || !bestTab.id) {
       return finishPoll(
         {
           success: false,
@@ -145,14 +165,16 @@ export class BandaGoActivePoller {
       );
     }
 
-    const tabId = tabs[0].id;
-    const tabUrl = tabs[0].url || "https://go.bandahealth.org";
+    const tabId = bestTab.id;
+    const tabUrl = bestTab.url || "https://go.bandahealth.org";
     let origin = "https://go.bandahealth.org";
     try {
       origin = new URL(tabUrl).origin;
     } catch {}
 
     const cachedAuthHeader = await CdpNetworkAdapter.getAuthHeader(origin);
+    const discoveredGql = await CdpNetworkAdapter.getGraphqlEndpoint(origin);
+    const gqlEndpointArg = discoveredGql?.endpointUrl || "/graphql/";
 
     const storageOnHandQuery = `
       query M_StorageOnHandForInventoryList($Page: Int, $Size: Int, $Filter: String) {
@@ -361,7 +383,56 @@ export class BandaGoActivePoller {
           }
 
           try {
-            // Fallback: look for JWT token in localStorage/sessionStorage if CDP hasn't captured a header yet
+            // Fallback: look for JWT token in localStorage/sessionStorage (handles raw, Bearer prefixed, and nested Zustand/Redux JSON)
+            const jwtRegex = /^eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/;
+            const extractJwt = (val: unknown, depth = 0): string | null => {
+              if (depth > 3 || val == null) return null;
+              if (typeof val === "string") {
+                const cleaned = val
+                  .trim()
+                  .replace(/^"|"$/g, "")
+                  .replace(/^Bearer\s+/i, "")
+                  .trim();
+                if (jwtRegex.test(cleaned)) return cleaned;
+                if (cleaned.startsWith("{") || cleaned.startsWith("[")) {
+                  try {
+                    return extractJwt(JSON.parse(cleaned), depth + 1);
+                  } catch {}
+                }
+                return null;
+              }
+              if (Array.isArray(val)) {
+                for (const el of val) {
+                  const hit = extractJwt(el, depth + 1);
+                  if (hit) return hit;
+                }
+                return null;
+              }
+              if (typeof val === "object") {
+                const obj = val as Record<string, any>;
+                for (const k of [
+                  "token",
+                  "accessToken",
+                  "access_token",
+                  "jwt",
+                  "id_token",
+                  "idToken",
+                  "authToken",
+                  "authorization",
+                ]) {
+                  const hit = extractJwt(obj[k], depth + 1);
+                  if (hit) return hit;
+                }
+                for (const sub of ["state", "auth", "user", "session", "data"]) {
+                  if (obj[sub] && typeof obj[sub] === "object") {
+                    const hit = extractJwt(obj[sub], depth + 1);
+                    if (hit) return hit;
+                  }
+                }
+              }
+              return null;
+            };
+
             let authHeader = cachedAuthHeader;
             if (!authHeader) {
               try {
@@ -374,41 +445,7 @@ export class BandaGoActivePoller {
                     const key = store.key(i);
                     const val = key ? store.getItem(key) : null;
                     if (!val) continue;
-
-                    const trimmed = val.trim();
-                    let rawToken: string | null = null;
-
-                    if (
-                      /^"?eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+"?$/.test(
-                        trimmed,
-                      )
-                    ) {
-                      rawToken = trimmed.replace(/^"|"$/g, "");
-                    } else if (trimmed.startsWith("{")) {
-                      try {
-                        const obj = JSON.parse(trimmed);
-                        for (const k of [
-                          "token",
-                          "accessToken",
-                          "access_token",
-                          "jwt",
-                          "id_token",
-                          "idToken",
-                          "authToken",
-                        ]) {
-                          if (
-                            typeof obj[k] === "string" &&
-                            /^eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(
-                              obj[k],
-                            )
-                          ) {
-                            rawToken = obj[k];
-                            break;
-                          }
-                        }
-                      } catch {}
-                    }
-
+                    const rawToken = extractJwt(val, 0);
                     if (rawToken) {
                       authHeader = `Bearer ${rawToken}`;
                       break;
@@ -435,7 +472,8 @@ export class BandaGoActivePoller {
               endpoint: string,
               queryStr: string,
               variables?: Record<string, any>,
-            ) => {
+              asBatch = false,
+            ): Promise<any> => {
               const opMatch = queryStr.match(/(?:query|mutation)\s+([A-Za-z0-9_]+)/);
               const opName = opMatch ? opMatch[1] : undefined;
               const bodyObj: Record<string, any> = { query: queryStr };
@@ -451,9 +489,18 @@ export class BandaGoActivePoller {
                   credentials: "include",
                   headers,
                   signal: controller.signal,
-                  body: JSON.stringify(bodyObj),
+                  body: JSON.stringify(asBatch ? [bodyObj] : bodyObj),
                 });
                 if (!res.ok) {
+                  if (!asBatch && (res.status === 400 || res.status === 500)) {
+                    const batchRetry = await executeGql(
+                      endpoint,
+                      queryStr,
+                      variables,
+                      true,
+                    );
+                    if (!batchRetry?.error) return batchRetry;
+                  }
                   const text = await res.text();
                   return {
                     error: `HTTP ${res.status}: ${text.slice(0, 200)}`,
@@ -472,7 +519,10 @@ export class BandaGoActivePoller {
                   };
                 }
                 try {
-                  return await res.json();
+                  const parsed = await res.json();
+                  return Array.isArray(parsed)
+                    ? parsed[0] || { error: "Empty batched GraphQL response" }
+                    : parsed;
                 } catch (parseErr: any) {
                   return {
                     error: `Invalid JSON response: ${parseErr.message}`,
@@ -498,7 +548,7 @@ export class BandaGoActivePoller {
             }
 
             // BandaGo iDempiere Inventory Polling (0-indexed pagination per idemp-plugins)
-            const MAX_PAGES = 20;
+            const MAX_PAGES = 150;
             const leanStorageQuery = `
               query M_StorageOnHandForInventoryList($Page: Int, $Size: Int, $Filter: String) {
                 M_StorageOnHandGet(Page: $Page, Size: $Size, Filter: $Filter) {
@@ -523,6 +573,26 @@ export class BandaGoActivePoller {
                 }
               }
             `;
+            const minimalStorageQuery = `
+              query M_StorageOnHandForInventoryList($Page: Int, $Size: Int, $Filter: String) {
+                M_StorageOnHandGet(Page: $Page, Size: $Size, Filter: $Filter) {
+                  PagingInfo { Page PageSize TotalCount TotalPages }
+                  Results {
+                    QtyOnHand
+                    UU
+                    M_AttributeSetInstance { UU GuaranteeDate Lot }
+                    M_Product {
+                      UU
+                      Name
+                      BH_SellPrice
+                      LastPurchasePrice
+                      TotalQuantity
+                      IsActive
+                    }
+                  }
+                }
+              }
+            `;
             const leanProductQuery = `
               query M_ProductForProductListPage($Filter: String, $Page: Int, $Size: Int, $Sort: String) {
                 M_ProductGet(Filter: $Filter, Page: $Page, Size: $Size, Sort: $Sort) {
@@ -532,12 +602,49 @@ export class BandaGoActivePoller {
                     Name
                     Value
                     BH_BuyPrice
+                    LastPurchasePrice
                     BH_SellPrice
                     IsActive
                     IsStocked
                     TotalQuantity
                     AD_Client { UU }
                     M_Product_Category { UU Name }
+                  }
+                }
+              }
+            `;
+            const minimalProductQuery = `
+              query M_ProductForProductListPage($Filter: String, $Page: Int, $Size: Int, $Sort: String) {
+                M_ProductGet(Filter: $Filter, Page: $Page, Size: $Size, Sort: $Sort) {
+                  PagingInfo { Page PageSize TotalCount TotalPages }
+                  Results {
+                    UU
+                    Name
+                    BH_SellPrice
+                    LastPurchasePrice
+                    TotalQuantity
+                    IsActive
+                    bh_reorder_level
+                    bh_reorder_quantity
+                    Created
+                  }
+                }
+              }
+            `;
+            const minimalProductNoFilterQuery = `
+              query M_ProductForProductListPage($Page: Int, $Size: Int) {
+                M_ProductGet(Page: $Page, Size: $Size) {
+                  PagingInfo { Page PageSize TotalCount TotalPages }
+                  Results {
+                    UU
+                    Name
+                    BH_SellPrice
+                    LastPurchasePrice
+                    TotalQuantity
+                    IsActive
+                    bh_reorder_level
+                    bh_reorder_quantity
+                    Created
                   }
                 }
               }
@@ -549,7 +656,7 @@ export class BandaGoActivePoller {
               if (msg.includes(`Cannot query field ${rootField}`) || msg.includes(`Cannot query field '${rootField}'`)) {
                 return false;
               }
-              return /Cannot query field|Validation error/i.test(msg);
+              return /Cannot query field|Validation error|Unknown argument|Invalid argument/i.test(msg);
             };
 
             let endpointToUse = gqlEndpoint;
@@ -580,7 +687,7 @@ export class BandaGoActivePoller {
               }
             }
 
-            // If optional subfield was rejected by older server build, retry lean query
+            // Tier 2 & Tier 3 progressive schema fallback for M_StorageOnHandGet
             if (isSubfieldValidationError(storageRes, "M_StorageOnHandGet")) {
               const leanRes = await executeGql(endpointToUse, leanStorageQuery, {
                 Page: 0,
@@ -590,6 +697,16 @@ export class BandaGoActivePoller {
               if (leanRes?.data?.M_StorageOnHandGet) {
                 activeStorageQuery = leanStorageQuery;
                 storageRes = leanRes;
+              } else if (isSubfieldValidationError(leanRes, "M_StorageOnHandGet")) {
+                const minRes = await executeGql(endpointToUse, minimalStorageQuery, {
+                  Page: 0,
+                  Size: 500,
+                  Filter: JSON.stringify({}),
+                });
+                if (minRes?.data?.M_StorageOnHandGet) {
+                  activeStorageQuery = minimalStorageQuery;
+                  storageRes = minRes;
+                }
               }
             }
 
@@ -605,17 +722,24 @@ export class BandaGoActivePoller {
               const firstPageIndex = typeof storagePaging.Page === "number" ? storagePaging.Page : 0;
               const nextStart = firstPageIndex === 0 ? 1 : firstPageIndex + 1;
               const lastPage = firstPageIndex === 0 ? totalPages - 1 : totalPages;
+              const combined = Array.isArray(storageRes?.data?.M_StorageOnHandGet?.Results)
+                ? [...storageRes.data.M_StorageOnHandGet.Results]
+                : [];
               for (let page = nextStart; page <= lastPage; page++) {
                 const nextPage = await executeGql(endpointToUse, activeStorageQuery, {
                   Page: page,
                   Size: 500,
                   Filter: JSON.stringify({}),
                 });
-                if (Array.isArray(nextPage?.data?.M_StorageOnHandGet?.Results)) {
-                  storageRes.data.M_StorageOnHandGet.Results.push(
-                    ...nextPage.data.M_StorageOnHandGet.Results,
-                  );
+                const nextResults = nextPage?.data?.M_StorageOnHandGet?.Results;
+                if (Array.isArray(nextResults)) {
+                  for (const row of nextResults) {
+                    combined.push(row);
+                  }
                 }
+              }
+              if (storageRes?.data?.M_StorageOnHandGet) {
+                storageRes.data.M_StorageOnHandGet.Results = combined;
               }
             }
 
@@ -623,6 +747,7 @@ export class BandaGoActivePoller {
             let productRes: any = null;
             if (productQuery) {
               let activeProductQuery = productQuery;
+              let includeFilterVar = true;
               productRes = await executeGql(endpointToUse, activeProductQuery, {
                 Page: 0,
                 Size: 500,
@@ -650,6 +775,7 @@ export class BandaGoActivePoller {
                 }
               }
 
+              // Tier 2, Tier 3, and Filter-less progressive fallback for M_ProductGet
               if (isSubfieldValidationError(productRes, "M_ProductGet")) {
                 const leanProdRes = await executeGql(endpointToUse, leanProductQuery, {
                   Page: 0,
@@ -659,6 +785,32 @@ export class BandaGoActivePoller {
                 if (leanProdRes?.data?.M_ProductGet) {
                   activeProductQuery = leanProductQuery;
                   productRes = leanProdRes;
+                } else {
+                  const minProdRes = await executeGql(endpointToUse, minimalProductQuery, {
+                    Page: 0,
+                    Size: 500,
+                    Filter: JSON.stringify({}),
+                  });
+                  if (minProdRes?.data?.M_ProductGet) {
+                    activeProductQuery = minimalProductQuery;
+                    productRes = minProdRes;
+                  } else if (
+                    isSubfieldValidationError(minProdRes, "M_ProductGet") ||
+                    minProdRes?.errors?.some((e: any) =>
+                      /Filter|Unknown argument/i.test(String(e?.message || "")),
+                    )
+                  ) {
+                    const noFilterRes = await executeGql(
+                      endpointToUse,
+                      minimalProductNoFilterQuery,
+                      { Page: 0, Size: 500 },
+                    );
+                    if (noFilterRes?.data?.M_ProductGet) {
+                      activeProductQuery = minimalProductNoFilterQuery;
+                      includeFilterVar = false;
+                      productRes = noFilterRes;
+                    }
+                  }
                 }
               }
 
@@ -668,17 +820,27 @@ export class BandaGoActivePoller {
                 const firstPageIndex = typeof prodPaging.Page === "number" ? prodPaging.Page : 0;
                 const nextStart = firstPageIndex === 0 ? 1 : firstPageIndex + 1;
                 const lastPage = firstPageIndex === 0 ? totalPages - 1 : totalPages;
+                const combined = Array.isArray(productRes?.data?.M_ProductGet?.Results)
+                  ? [...productRes.data.M_ProductGet.Results]
+                  : [];
                 for (let page = nextStart; page <= lastPage; page++) {
-                  const nextPage = await executeGql(endpointToUse, activeProductQuery, {
-                    Page: page,
-                    Size: 500,
-                    Filter: JSON.stringify({}),
-                  });
-                  if (Array.isArray(nextPage?.data?.M_ProductGet?.Results)) {
-                    productRes.data.M_ProductGet.Results.push(
-                      ...nextPage.data.M_ProductGet.Results,
-                    );
+                  const vars: Record<string, any> = includeFilterVar
+                    ? { Page: page, Size: 500, Filter: JSON.stringify({}) }
+                    : { Page: page, Size: 500 };
+                  const nextPage = await executeGql(
+                    endpointToUse,
+                    activeProductQuery,
+                    vars,
+                  );
+                  const nextResults = nextPage?.data?.M_ProductGet?.Results;
+                  if (Array.isArray(nextResults)) {
+                    for (const row of nextResults) {
+                      combined.push(row);
+                    }
                   }
+                }
+                if (productRes?.data?.M_ProductGet) {
+                  productRes.data.M_ProductGet.Results = combined;
                 }
               }
             }
@@ -692,12 +854,29 @@ export class BandaGoActivePoller {
               };
             }
 
-            // Fallback to legacy query if iDempiere queries fail or aren't supported
+            const primaryIdempiereError = productRes?.error
+              ? productRes
+              : storageRes?.error
+                ? storageRes
+                : Array.isArray(productRes?.errors) && productRes.errors.length > 0
+                  ? productRes
+                  : Array.isArray(storageRes?.errors) && storageRes.errors.length > 0
+                    ? storageRes
+                    : null;
+
+            // Fallback to legacy query only if iDempiere queries failed; preserve real iDempiere error if legacy fails
             if (legacyQuery) {
-              return await executeGql(endpointToUse, legacyQuery);
+              const legRes = await executeGql(endpointToUse, legacyQuery);
+              if (legRes?.data?.products) {
+                return legRes;
+              }
+              if (primaryIdempiereError) {
+                return primaryIdempiereError;
+              }
+              return legRes;
             }
 
-            return storageRes?.error ? storageRes : (productRes || storageRes);
+            return primaryIdempiereError || storageRes || productRes;
           } catch (e: any) {
             return {
               error: e.message || "Fetch failed",
@@ -705,7 +884,7 @@ export class BandaGoActivePoller {
           }
         },
         args: [
-          "/graphql/",
+          gqlEndpointArg,
           storageOnHandQuery,
           productListQuery,
           fallbackInventoryQuery,

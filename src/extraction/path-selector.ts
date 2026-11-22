@@ -8,12 +8,18 @@ const ENTITY_HINT_KEYS = new Set([
   "id",
   "_id",
   "uuid",
+  "uu",
+  "m_product_uu",
   "sku",
   "code",
+  "value",
   "name",
   "title",
   "email",
   "price",
+  "bh_sellprice",
+  "totalquantity",
+  "qtyonhand",
   "status",
   "category",
   "createdat",
@@ -41,6 +47,7 @@ function isObjectDictionary(
     "links",
     "_links",
     "pageInfo",
+    "PagingInfo",
     "errors",
     "status",
   ]);
@@ -212,7 +219,15 @@ function scoreCandidate(path: string, items: unknown[]): number {
     const keys = Object.keys(first);
     // Richer entity objects score higher than 1-key tag objects
     score += Math.min(keys.length, 15) * 4;
-    if (keys.some((k) => COMMON_ID_KEYS.includes(k) || /id$/i.test(k))) {
+    if (
+      keys.some(
+        (k) =>
+          COMMON_ID_KEYS.includes(k) ||
+          COMMON_ID_KEYS.includes(k.toLowerCase()) ||
+          /id$/i.test(k) ||
+          k === "UU",
+      )
+    ) {
       score += 25;
     }
     if (

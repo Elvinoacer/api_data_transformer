@@ -127,8 +127,42 @@ function isDynamicOrVersionSegment(seg: string): boolean {
   return false;
 }
 
+const BANDAGO_OP_LABELS: Record<string, string> = {
+  M_ProductGet: "BandaGo Products",
+  M_ProductForProductListPage: "BandaGo Products",
+  M_StorageOnHandGet: "BandaGo Inventory Batches",
+  M_StorageOnHandForInventoryList: "BandaGo Inventory Batches",
+  M_Product_CategoryGet: "BandaGo Product Categories",
+  M_ProductPriceGet: "BandaGo Product Prices",
+  C_LocationGet: "BandaGo Locations",
+  AD_MenuGet: "BandaGo Navigation Menu",
+  BH_HIE_OrgGet: "BandaGo HIE Organizations",
+  BH_IDSR_CaseGet: "BandaGo IDSR Cases",
+};
+
 function cleanOperationName(opName: string): string {
-  let cleaned = opName.trim();
+  const raw = opName.trim();
+  const isCountOnly = /:count$/i.test(raw);
+  const base = raw.replace(/:count$/i, "").trim();
+
+  if (BANDAGO_OP_LABELS[base]) {
+    return isCountOnly
+      ? `${BANDAGO_OP_LABELS[base]} (Count)`
+      : BANDAGO_OP_LABELS[base];
+  }
+
+  // Handle iDempiere/BandaGo operation/field naming like M_ProductGet, BH_VisitGet
+  if (/^(?:M|C|AD|BH)_[A-Za-z0-9_]+Get$/.test(base)) {
+    const stripped = base
+      .replace(/^(?:M|C|AD|BH)_/, "")
+      .replace(/Get$/, "");
+    const label = humanizeIdentifier(stripped);
+    if (label) {
+      return isCountOnly ? `BandaGo ${label} (Count)` : `BandaGo ${label}`;
+    }
+  }
+
+  let cleaned = base;
   // Strip common GraphQL verb prefixes and suffixes
   cleaned = cleaned.replace(
     /^(get|list|fetch|load|search|find|query|read)(?=[A-Z_])/i,
@@ -139,7 +173,8 @@ function cleanOperationName(opName: string): string {
     "",
   );
   cleaned = cleaned.replace(/^_+|_+$/g, "");
-  return humanizeIdentifier(cleaned || opName);
+  const formatted = humanizeIdentifier(cleaned || base);
+  return isCountOnly && formatted ? `${formatted} (Count)` : formatted;
 }
 
 /**

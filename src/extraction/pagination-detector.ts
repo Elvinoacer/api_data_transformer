@@ -110,6 +110,8 @@ export function detectPaginationFromResponse(params: {
   let offsetValue: number | undefined;
   let offsetParamName: string | undefined;
   let strategy: PaginationStrategy = "none";
+  let sawPascalCasePagingInfo = false;
+  let rawZeroIndexedPage: number | undefined;
 
   // 1. Inspect URL query parameters
   let parsedUrl: URL | null = null;
@@ -152,10 +154,11 @@ export function detectPaginationFromResponse(params: {
     // Ignore malformed URL
   }
 
-  // 2. Inspect POST body JSON if present (for POST /search or GraphQL variables)
+  // 2. Inspect POST body JSON if present (for POST /search or GraphQL variables, including Apollo batch arrays)
   if (requestBody) {
     try {
-      const reqJson = JSON.parse(requestBody);
+      const parsedReq = JSON.parse(requestBody);
+      const reqJson = Array.isArray(parsedReq) ? parsedReq[0] : parsedReq;
       const reqTargets = [
         reqJson,
         reqJson?.variables,
@@ -164,12 +167,25 @@ export function detectPaginationFromResponse(params: {
       ].filter((x) => x && typeof x === "object" && !Array.isArray(x));
       for (const target of reqTargets) {
         if (currentPage === undefined) {
-          currentPage = findNumericProp(target, PAGE_PARAM_KEYS);
-          if (currentPage !== undefined && strategy === "none")
-            strategy = "page";
+          const p = findNumericProp(target, PAGE_PARAM_KEYS);
+          if (p !== undefined) {
+            currentPage = p;
+            if (strategy === "none") strategy = "page";
+          } else if ("Page" in target) {
+            const zeroP = findNumericProp(target, ["Page"]);
+            if (zeroP !== undefined) {
+              rawZeroIndexedPage = zeroP;
+              if (strategy === "none") strategy = "page";
+            }
+          }
         }
         if (pageSize === undefined) {
-          pageSize = findNumericProp(target, [...LIMIT_PARAM_KEYS, "first"]);
+          pageSize = findNumericProp(target, [
+            ...LIMIT_PARAM_KEYS,
+            "Size",
+            "PageSize",
+            "first",
+          ]);
         }
         if (offsetValue === undefined) {
           offsetValue = findNumericProp(target, OFFSET_PARAM_KEYS);
@@ -182,13 +198,22 @@ export function detectPaginationFromResponse(params: {
     }
   }
 
-  // 3. Inspect JSON response envelope containers
+  // 3. Inspect JSON response envelope containers (unwrap single-element Apollo batch array if passed directly)
+  const normalizedBody =
+    Array.isArray(parsedBody) &&
+    parsedBody.length > 0 &&
+    parsedBody[0] &&
+    typeof parsedBody[0] === "object" &&
+    "data" in parsedBody[0]
+      ? parsedBody[0]
+      : parsedBody;
+
   if (
-    parsedBody &&
-    typeof parsedBody === "object" &&
-    !Array.isArray(parsedBody)
+    normalizedBody &&
+    typeof normalizedBody === "object" &&
+    !Array.isArray(normalizedBody)
   ) {
-    const root = parsedBody as Record<string, any>;
+    const root = normalizedBody as Record<string, any>;
     const envelopeCandidates: Record<string, any>[] = [
       root,
       root.data,
@@ -196,23 +221,39 @@ export function detectPaginationFromResponse(params: {
       root.pagination,
       root.paging,
       root.pageInfo,
+      root.PagingInfo,
       root.page_info,
       root.data?.meta,
       root.data?.pagination,
       root.data?.pageInfo,
-      // Also check nested GraphQL connection objects (e.g. data.medicines.pageInfo)
+      root.data?.PagingInfo,
+      // Also check nested GraphQL connection objects (e.g. data.medicines.pageInfo, data.M_ProductGet.PagingInfo)
       ...(root.data &&
       typeof root.data === "object" &&
       !Array.isArray(root.data)
         ? Object.values(root.data)
             .filter((v: any) => v && typeof v === "object" && !Array.isArray(v))
-            .flatMap((v: any) => [v, v.pageInfo, v.meta, v.pagination])
+            .flatMap((v: any) => [
+              v,
+              v.PagingInfo,
+              v.pagingInfo,
+              v.pageInfo,
+              v.meta,
+              v.pagination,
+            ])
         : []),
     ].filter((c): c is Record<string, any> =>
       Boolean(c && typeof c === "object" && !Array.isArray(c)),
     );
 
     for (const env of envelopeCandidates) {
+      const isPagingInfoObj =
+        env.__typename === "PagingInfo" ||
+        ("Page" in env && ("PageSize" in env || "TotalPages" in env || "TotalCount" in env));
+      if (isPagingInfoObj) {
+        sawPascalCasePagingInfo = true;
+      }
+
       if (currentPage === undefined) {
         const p = findNumericProp(env, [
           "page",
@@ -222,8 +263,15 @@ export function detectPaginationFromResponse(params: {
           "page_number",
         ]);
         if (p !== undefined && p >= 0) {
-          currentPage = p;
+          currentPage = p === 0 ? 1 : p;
           if (strategy === "none") strategy = "page";
+        } else if ("Page" in env || "CurrentPage" in env) {
+          const pascalP = findNumericProp(env, ["Page", "CurrentPage"]);
+          if (pascalP !== undefined && pascalP >= 0) {
+            // iDempiere/BandaGo PagingInfo.Page is 0-indexed (Page 0 -> Page 1 of N)
+            currentPage = isPagingInfoObj ? pascalP + 1 : pascalP === 0 ? 1 : pascalP;
+            if (strategy === "none") strategy = "page";
+          }
         }
       }
 
@@ -234,6 +282,8 @@ export function detectPaginationFromResponse(params: {
           "per_page",
           "pageSize",
           "page_size",
+          "PageSize",
+          "Size",
           "size",
         ]);
       }
@@ -242,6 +292,7 @@ export function detectPaginationFromResponse(params: {
         totalPages = findNumericProp(env, [
           "totalPages",
           "total_pages",
+          "TotalPages",
           "lastPage",
           "last_page",
           "pageCount",
@@ -256,8 +307,11 @@ export function detectPaginationFromResponse(params: {
           "total_items",
           "totalCount",
           "total_count",
+          "TotalCount",
+          "TotalItems",
           "totalRecords",
           "total_records",
+          "TotalRecords",
           "recordsTotal",
           "total",
           "count",
@@ -314,6 +368,13 @@ export function detectPaginationFromResponse(params: {
         }
       }
     }
+  }
+
+  // Apply 0-indexed POST Page variable if response did not provide a Page field
+  if (currentPage === undefined && rawZeroIndexedPage !== undefined) {
+    currentPage = rawZeroIndexedPage + 1;
+  } else if (sawPascalCasePagingInfo && currentPage === 0) {
+    currentPage = 1;
   }
 
   // Infer effective pageSize if missing
@@ -442,10 +503,23 @@ export function mergePaginationState(
 
   const prevPages = existing?.observedPages || [];
   const nextPagesSet = new Set<number>(prevPages);
-  if (detected.currentPage !== undefined && detected.currentPage > 0) {
-    nextPagesSet.add(detected.currentPage);
+  if (detected.currentPage !== undefined) {
+    if (detected.currentPage > 0) {
+      nextPagesSet.add(detected.currentPage);
+    } else if (detected.currentPage === 0) {
+      nextPagesSet.add(1);
+    }
   }
   const observedPages = Array.from(nextPagesSet).sort((a, b) => a - b);
+
+  // Do not let a count-only response (no currentPage, no pageSize, no totalPages) overwrite rich existing list pagination
+  const isCountOnlyUpdate =
+    existing &&
+    existing.totalPages !== undefined &&
+    existing.totalPages > 1 &&
+    detected.currentPage === undefined &&
+    detected.pageSize === undefined &&
+    detected.totalPages === undefined;
 
   // Preserve valid URL without redacted tokens for in-tab next-page generation if query-based
   const isCleanUrl =
@@ -457,11 +531,18 @@ export function mergePaginationState(
       detected.strategy !== "none"
         ? detected.strategy
         : existing?.strategy || "none",
-    currentPage: detected.currentPage ?? existing?.currentPage,
+    currentPage:
+      detected.currentPage === 0
+        ? 1
+        : (detected.currentPage ?? existing?.currentPage),
     pageSize: detected.pageSize ?? existing?.pageSize,
     totalPages: detected.totalPages ?? existing?.totalPages,
-    totalRecords: detected.totalRecords ?? existing?.totalRecords,
-    hasNextPage: detected.hasNextPage ?? existing?.hasNextPage,
+    totalRecords: isCountOnlyUpdate
+      ? existing?.totalRecords
+      : (detected.totalRecords ?? existing?.totalRecords),
+    hasNextPage: isCountOnlyUpdate
+      ? existing?.hasNextPage
+      : (detected.hasNextPage ?? existing?.hasNextPage),
     nextCursor:
       detected.nextCursor !== undefined
         ? detected.nextCursor

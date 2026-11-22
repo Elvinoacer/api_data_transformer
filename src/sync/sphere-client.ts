@@ -331,8 +331,27 @@ export class SphereSyncClient {
           if (resData && resData.policySummary) {
             await this.saveServerPolicy({
               outboundSyncMode: resData.policySummary.outboundSyncMode,
-              inboundEnabled: !resData.paused,
+              inboundEnabled:
+                resData.policySummary.inboundEnabled ??
+                (!resData.paused && !resData.skipped),
+              expectedTenantUU: resData.policySummary.expectedTenantUU ?? null,
             }).catch(() => {});
+          }
+
+          if (resData && (resData.skipped === true || resData.paused === true)) {
+            await SyncQueueManager.requeueWithoutPenalty(ids);
+            await this.saveServerPolicy({
+              outboundSyncMode: resData.policySummary?.outboundSyncMode,
+              inboundEnabled: false,
+              expectedTenantUU: resData.policySummary?.expectedTenantUU ?? null,
+            }).catch(() => {});
+            const pausedReason =
+              resData.reason || "Inbound POS sync is paused by Sphere admin policy";
+            return {
+              synced: totalSynced,
+              failed: totalFailed,
+              error: pausedReason,
+            };
           }
 
           if (resData && resData.success === false) {
@@ -512,6 +531,30 @@ export class SphereSyncClient {
           status: response.status,
           error: `Server responded with ${response.status}: ${text.slice(0, 120)}`,
         };
+      }
+
+      if (typeof response.json === "function") {
+        try {
+          const pingData = await response.json();
+          if (pingData && pingData.policySummary) {
+            await this.saveServerPolicy({
+              outboundSyncMode: pingData.policySummary.outboundSyncMode,
+              inboundEnabled:
+                pingData.policySummary.inboundEnabled ??
+                (!pingData.paused && !pingData.skipped),
+              expectedTenantUU: pingData.policySummary.expectedTenantUU ?? null,
+            }).catch(() => {});
+          }
+          if (pingData && (pingData.paused || pingData.skipped)) {
+            return {
+              ok: true,
+              status: response.status,
+              error:
+                pingData.reason ||
+                "Connected (Inbound POS sync is currently paused by Sphere admin)",
+            };
+          }
+        } catch {}
       }
 
       return { ok: true, status: response.status };

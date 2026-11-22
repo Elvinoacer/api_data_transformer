@@ -12,6 +12,9 @@ export interface EligibilityCheckResult {
 const STATIC_ASSET_EXT_REGEX =
   /\.(js|mjs|cjs|css|scss|less|png|jpg|jpeg|gif|webp|avif|svg|ico|woff|woff2|ttf|otf|eot|mp4|webm|mp3|wav|pdf|zip|wasm|map)$/i;
 
+const STATIC_JSON_NOISE_REGEX =
+  /(?:^|\/)(?:translations?|version|manifest|config|runtime-config|build-manifest|asset-manifest|locales?\/[^/]+|i18n\/[^/]+)\.json$/i;
+
 /**
  * Extracts registrable base domain (e.g. "app.pharmacy.com" -> "pharmacy.com",
  * "api.shop.co.uk" -> "shop.co.uk") so API subdomains match seamlessly.
@@ -112,8 +115,11 @@ export function checkResponseEligibility(params: {
     };
   }
 
-  // 2. Skip static file extensions
-  if (STATIC_ASSET_EXT_REGEX.test(parsed.pathname)) {
+  // 2. Skip static file extensions and static i18n/version metadata JSON files
+  if (
+    STATIC_ASSET_EXT_REGEX.test(parsed.pathname) ||
+    STATIC_JSON_NOISE_REGEX.test(parsed.pathname)
+  ) {
     return { isEligible: false, reason: "Static asset URL" };
   }
 

@@ -112,11 +112,49 @@ function isQuarantineOrInactiveRow(row: BandaGoStorageRow): boolean {
   return /\b(quarantine|expired|damaged|reject|return|waste)\b/i.test(label);
 }
 
-function isExpiredGuaranteeDate(guaranteeDate?: string | null): boolean {
-  if (!guaranteeDate) return false;
-  const ms = Date.parse(guaranteeDate);
-  if (Number.isNaN(ms)) return false;
+function parseFlexibleWritebackDateMs(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0) return null;
+    return raw < 1e11 ? raw * 1000 : raw;
+  }
+  const str = String(raw).trim();
+  if (!str) return null;
+  if (/^\d{10,13}(?:\.\d+)?$/.test(str)) {
+    const num = Number(str);
+    if (Number.isFinite(num) && num > 0) {
+      return num < 1e11 ? num * 1000 : num;
+    }
+  }
+  const ms = Date.parse(str);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function isExpiredGuaranteeDate(guaranteeDate?: string | number | null): boolean {
+  const ms = parseFlexibleWritebackDateMs(guaranteeDate);
+  if (ms === null) return false;
   return ms < Date.now();
+}
+
+function selectBestBandaGoWritebackTab(
+  tabs: chrome.tabs.Tab[],
+): chrome.tabs.Tab | null {
+  const valid = tabs.filter((t) => typeof t.id === "number");
+  if (valid.length === 0) return null;
+  const nonDiscarded = valid.filter((t) => !t.discarded);
+  const pool = nonDiscarded.length > 0 ? nonDiscarded : valid;
+  return [...pool].sort((a, b) => {
+    const score = (t: chrome.tabs.Tab) => {
+      const u = (t.url || "").toLowerCase();
+      let s = 0;
+      if (!/\/(login|signin|auth)\b/.test(u)) s += 100;
+      if (/\/(products|inventory|dispense|sales)/.test(u)) s += 50;
+      if (t.active) s += 20;
+      if (t.status === "complete") s += 10;
+      return s;
+    };
+    return score(b) - score(a);
+  })[0];
 }
 
 /**
@@ -150,12 +188,12 @@ export function planInventoryAdjustmentLines(input: {
       (r) => !isExpiredGuaranteeDate(r.M_AttributeSetInstance?.GuaranteeDate),
     )
     .sort((a, b) => {
-      const aExp = a.M_AttributeSetInstance?.GuaranteeDate
-        ? Date.parse(a.M_AttributeSetInstance.GuaranteeDate)
-        : Number.MAX_SAFE_INTEGER;
-      const bExp = b.M_AttributeSetInstance?.GuaranteeDate
-        ? Date.parse(b.M_AttributeSetInstance.GuaranteeDate)
-        : Number.MAX_SAFE_INTEGER;
+      const aExp =
+        parseFlexibleWritebackDateMs(a.M_AttributeSetInstance?.GuaranteeDate) ??
+        Number.MAX_SAFE_INTEGER;
+      const bExp =
+        parseFlexibleWritebackDateMs(b.M_AttributeSetInstance?.GuaranteeDate) ??
+        Number.MAX_SAFE_INTEGER;
       if (aExp !== bExp) return aExp - bExp;
       return (b.QtyOnHand ?? 0) - (a.QtyOnHand ?? 0);
     });
@@ -490,7 +528,8 @@ export class BandaGoWritebackEngine {
     }
 
     const tabs = await chrome.tabs.query({ url: "*://go.bandahealth.org/*" });
-    if (tabs.length === 0 || !tabs[0].id) {
+    const bestTab = selectBestBandaGoWritebackTab(tabs);
+    if (!bestTab || !bestTab.id) {
       const msg =
         "No open go.bandahealth.org tab — released jobs cleanly until POS is open";
       await this.postAck(
@@ -530,12 +569,14 @@ export class BandaGoWritebackEngine {
       };
     }
 
-    const tabId = tabs[0].id;
+    const tabId = bestTab.id;
     let origin = "https://go.bandahealth.org";
     try {
-      if (tabs[0].url) origin = new URL(tabs[0].url).origin;
+      if (bestTab.url) origin = new URL(bestTab.url).origin;
     } catch {}
     const cachedAuthHeader = await CdpNetworkAdapter.getAuthHeader(origin);
+    const discoveredGql = await CdpNetworkAdapter.getGraphqlEndpoint(origin);
+    const gqlEndpoint = discoveredGql?.endpointUrl || "/graphql/";
     const expectedTenantUU =
       config.expectedTenantUU?.trim() || policy?.expectedTenantUU || null;
 
@@ -544,7 +585,7 @@ export class BandaGoWritebackEngine {
       const execResults = await chrome.scripting.executeScript({
         target: { tabId },
         func: inTabExecuteWritebackBatch,
-        args: ["/graphql/", jobs, expectedTenantUU, cachedAuthHeader],
+        args: [gqlEndpoint, jobs, expectedTenantUU, cachedAuthHeader],
       });
       tabResults = Array.isArray(execResults?.[0]?.result?.results)
         ? execResults[0].result.results
@@ -658,6 +699,51 @@ async function inTabExecuteWritebackBatch(
   results: any[];
   fatalError?: { code: string; message: string };
 }> {
+  const jwtRegex = /^eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/;
+  const extractJwt = (val: unknown, depth = 0): string | null => {
+    if (depth > 3 || val == null) return null;
+    if (typeof val === "string") {
+      const cleaned = val.trim().replace(/^"|"$/g, "").replace(/^Bearer\s+/i, "").trim();
+      if (jwtRegex.test(cleaned)) return cleaned;
+      if (cleaned.startsWith("{") || cleaned.startsWith("[")) {
+        try {
+          return extractJwt(JSON.parse(cleaned), depth + 1);
+        } catch {}
+      }
+      return null;
+    }
+    if (Array.isArray(val)) {
+      for (const el of val) {
+        const hit = extractJwt(el, depth + 1);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    if (typeof val === "object") {
+      const obj = val as Record<string, unknown>;
+      for (const k of [
+        "token",
+        "accessToken",
+        "access_token",
+        "jwt",
+        "id_token",
+        "idToken",
+        "authToken",
+        "authorization",
+      ]) {
+        const hit = extractJwt(obj[k], depth + 1);
+        if (hit) return hit;
+      }
+      for (const sub of ["state", "auth", "user", "session", "data"]) {
+        if (obj[sub] && typeof obj[sub] === "object") {
+          const hit = extractJwt(obj[sub], depth + 1);
+          if (hit) return hit;
+        }
+      }
+    }
+    return null;
+  };
+
   let authHeader = cachedAuthHeader;
   if (!authHeader) {
     try {
@@ -667,34 +753,7 @@ async function inTabExecuteWritebackBatch(
           const key = store.key(i);
           const val = key ? store.getItem(key) : null;
           if (!val) continue;
-          const trimmed = val.trim();
-          let rawToken: string | null = null;
-          if (/^"?eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+"?$/.test(trimmed)) {
-            rawToken = trimmed.replace(/^"|"$/g, "");
-          } else if (trimmed.startsWith("{")) {
-            try {
-              const obj = JSON.parse(trimmed);
-              for (const k of [
-                "token",
-                "accessToken",
-                "access_token",
-                "jwt",
-                "id_token",
-                "idToken",
-                "authToken",
-              ]) {
-                if (
-                  typeof obj[k] === "string" &&
-                  /^eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(
-                    obj[k],
-                  )
-                ) {
-                  rawToken = obj[k];
-                  break;
-                }
-              }
-            } catch {}
-          }
+          const rawToken = extractJwt(val, 0);
           if (rawToken) {
             authHeader = `Bearer ${rawToken}`;
             break;
@@ -716,6 +775,24 @@ async function inTabExecuteWritebackBatch(
   if (authHeader) {
     headers["Authorization"] = authHeader;
   }
+
+  const parseDateMs = (raw: unknown): number | null => {
+    if (raw === undefined || raw === null || raw === "") return null;
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw) || raw <= 0) return null;
+      return raw < 1e11 ? raw * 1000 : raw;
+    }
+    const str = String(raw).trim();
+    if (!str) return null;
+    if (/^\d{10,13}(?:\.\d+)?$/.test(str)) {
+      const num = Number(str);
+      if (Number.isFinite(num) && num > 0) {
+        return num < 1e11 ? num * 1000 : num;
+      }
+    }
+    const ms = Date.parse(str);
+    return Number.isNaN(ms) ? null : ms;
+  };
 
   let activeEndpoint = gqlEndpoint;
 
@@ -740,22 +817,27 @@ async function inTabExecuteWritebackBatch(
   };
 
   const runGql = async (query: string, variables?: Record<string, any>) => {
-    const attempt = async (url: string) => {
+    const attempt = async (url: string, asBatch = false): Promise<any> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
+        const bodyPayload = { query, variables };
         const res = await fetch(url, {
           method: "POST",
           credentials: "include",
           headers,
           signal: controller.signal,
-          body: JSON.stringify({ query, variables }),
+          body: JSON.stringify(asBatch ? [bodyPayload] : bodyPayload),
         });
         const ct =
           (typeof res.headers?.get === "function"
             ? res.headers.get("content-type")
             : "") || "";
         if (!res.ok) {
+          if (!asBatch && (res.status === 400 || res.status === 500)) {
+            const batchRetry = await attempt(url, true);
+            if (batchRetry.ok) return batchRetry;
+          }
           const text = await res.text().catch(() => "");
           return {
             ok: false,
@@ -771,7 +853,8 @@ async function inTabExecuteWritebackBatch(
             error: `Non-JSON response (${ct})`,
           };
         }
-        const json = await res.json();
+        const parsed = await res.json();
+        const json = Array.isArray(parsed) ? parsed[0] || {} : parsed;
         if (Array.isArray(json?.errors) && json.errors.length > 0) {
           const msg = json.errors.map((e: any) => e?.message || "").join("; ");
           return { ok: false, status: res.status, error: msg };
@@ -951,17 +1034,17 @@ async function inTabExecuteWritebackBatch(
         })
         .filter((r) => {
           const gd = r.M_AttributeSetInstance?.GuaranteeDate;
-          if (!gd) return true;
-          const ms = Date.parse(gd);
-          return Number.isNaN(ms) || ms >= Date.now();
+          if (gd === undefined || gd === null || gd === "") return true;
+          const ms = parseDateMs(gd);
+          return ms === null || ms >= Date.now();
         })
         .sort((a, b) => {
-          const aExp = a.M_AttributeSetInstance?.GuaranteeDate
-            ? Date.parse(a.M_AttributeSetInstance.GuaranteeDate)
-            : Number.MAX_SAFE_INTEGER;
-          const bExp = b.M_AttributeSetInstance?.GuaranteeDate
-            ? Date.parse(b.M_AttributeSetInstance.GuaranteeDate)
-            : Number.MAX_SAFE_INTEGER;
+          const aExp =
+            parseDateMs(a.M_AttributeSetInstance?.GuaranteeDate) ??
+            Number.MAX_SAFE_INTEGER;
+          const bExp =
+            parseDateMs(b.M_AttributeSetInstance?.GuaranteeDate) ??
+            Number.MAX_SAFE_INTEGER;
           return aExp - bExp;
         });
 

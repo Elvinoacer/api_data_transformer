@@ -31,6 +31,8 @@ export interface SphereProductSyncItem {
   strength?: string;
   description?: string;
   packSize?: string;
+  reorderLevel?: number | null;
+  reorderQuantity?: number | null;
   isActive?: boolean;
   discontinued?: boolean;
   tenantUU?: string | null;
@@ -39,6 +41,33 @@ export interface SphereProductSyncItem {
   externalOrgId?: string | null;
   uomSymbol?: string | null;
   _allLotsExpired?: boolean;
+}
+
+/**
+ * Parses timestamps from either ISO date strings, Unix epoch milliseconds (live BandaGo),
+ * numeric epoch strings, or Unix epoch seconds.
+ */
+export function parseFlexibleTimestampMs(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0) return null;
+    return raw < 1e11 ? raw * 1000 : raw;
+  }
+  const str = String(raw).trim();
+  if (!str) return null;
+  if (/^\d{10,13}(?:\.\d+)?$/.test(str)) {
+    const num = Number(str);
+    if (Number.isFinite(num) && num > 0) {
+      return num < 1e11 ? num * 1000 : num;
+    }
+  }
+  const parsed = Date.parse(str);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function roundMoney2dp(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 100) / 100;
 }
 
 function parseIdempiereBool(value: unknown, defaultValue: boolean): boolean {
@@ -102,8 +131,8 @@ function resolveSellableRetailPrice(raw: Record<string, any>): number {
           return false;
         }
         if (plv.ValidFrom) {
-          const validMs = Date.parse(String(plv.ValidFrom));
-          if (!Number.isNaN(validMs) && validMs > now) return false;
+          const validMs = parseFlexibleTimestampMs(plv.ValidFrom);
+          if (validMs !== null && validMs > now) return false;
         }
       }
       return true;
@@ -123,12 +152,8 @@ function resolveSellableRetailPrice(raw: Record<string, any>): number {
         : 0;
       if (bDefault !== aDefault) return bDefault - aDefault;
 
-      const aMs = a.M_PriceList_Version?.ValidFrom
-        ? Date.parse(String(a.M_PriceList_Version.ValidFrom)) || 0
-        : 0;
-      const bMs = b.M_PriceList_Version?.ValidFrom
-        ? Date.parse(String(b.M_PriceList_Version.ValidFrom)) || 0
-        : 0;
+      const aMs = parseFlexibleTimestampMs(a.M_PriceList_Version?.ValidFrom) || 0;
+      const bMs = parseFlexibleTimestampMs(b.M_PriceList_Version?.ValidFrom) || 0;
       return bMs - aMs;
     });
 
@@ -469,15 +494,47 @@ export const CATEGORY_MAP: Record<string, CategoryMapping> = {
     defaultImage: "/images/categories/cat-allergy.webp",
     rx: false,
   },
+  lubricating: {
+    slug: "sexual-health",
+    defaultImage: "/images/categories/cat-sexual-health.webp",
+    rx: false,
+  },
+  lubricant: {
+    slug: "sexual-health",
+    defaultImage: "/images/categories/cat-sexual-health.webp",
+    rx: false,
+  },
+  condom: {
+    slug: "sexual-health",
+    defaultImage: "/images/categories/cat-sexual-health.webp",
+    rx: false,
+  },
+  cream: {
+    slug: "skin-care",
+    defaultImage: "/images/categories/cat-skin-care.webp",
+    rx: false,
+  },
+  ointment: {
+    slug: "skin-care",
+    defaultImage: "/images/categories/cat-skin-care.webp",
+    rx: false,
+  },
+  lotion: {
+    slug: "skin-care",
+    defaultImage: "/images/categories/cat-skin-care.webp",
+    rx: false,
+  },
 };
 
 // Prescription-only keywords per PPB (Pharmacy & Poisons Board Kenya) schedule
 export const RX_SCHEDULE_REGEX =
-  /\b(amoxicillin|amoxil|augmentin|co-amoxiclav|ampicillin|cloxacillin|azithromycin|ciprofloxacin|cefuroxime|cefixime|ceftriaxone|clindamycin|levofloxacin|moxifloxacin|nitrofurantoin|flucloxacillin|erythromycin|clarithromycin|metronidazole|flagyl|doxycycline|tinidazole|fluconazole|itraconazole|ketoconazole|acyclovir|valacyclovir|gentamicin|amlodipine|losartan|telmisartan|valsartan|enalapril|lisinopril|ramipril|atenolol|metoprolol|bisoprolol|carvedilol|nebivolol|nifedipine|furosemide|hydrochlorothiazide|spironolactone|atorvastatin|rosuvastatin|simvastatin|metformin|glibenclamide|gliclazide|glimepiride|sitagliptin|vildagliptin|dapagliflozin|empagliflozin|insulin|salbutamol|ventolin|symbicort|seretide|budesonide|fluticasone|montelukast|prednisolone|dexamethasone|hydrocortisone|betamethasone|omeprazole|esomeprazole|pantoprazole|lansoprazole|rabeprazole|diclofenac|celecoxib|etoricoxib|meloxicam|indomethacin|tramadol|codeine|morphine|amitriptyline|fluoxetine|sertraline|escitalopram|citalopram|paroxetine|venlafaxine|duloxetine|alprazolam|diazepam|lorazepam|clonazepam|zolpidem|carbamazepine|valproate|phenytoin|levetiracetam|lamotrigine|pregabalin|gabapentin|sildenafil|tadalafil|finasteride|tamsulosin|testosterone|warfarin|rivaroxaban|apixaban|clopidogrel|levothyroxine|carbimazole|methotrexate|hydroxychloroquine|allopurinol|colchicine|artemether|lumefantrine|coartem)\b/i;
+  /\b(dda|pom|controlled|narcotic|psychotropic|inj|injection|ampoule|midazolam|ketamine|pethidine|fentanyl|haloperidol|chlorpromazine|promethazine|mixiclav|amoksiklav|clavam|curam|eflaron|dazole|funbact|cefpodoxime|ceftazidime|meropenem|vancomycin|amikacin|ofloxacin|norfloxacin|secnidazole|methyldopa|hydralazine|digoxin|amiodarone|propranolol|clonidine|triamcinolone|mometasone|clobetasol|beclomethasone|mupirocin|fusidic|clotrimazole|miconazole|amoxicillin|amoxil|augmentin|co-amoxiclav|ampicillin|cloxacillin|azithromycin|ciprofloxacin|cefuroxime|cefixime|ceftriaxone|clindamycin|levofloxacin|moxifloxacin|nitrofurantoin|flucloxacillin|erythromycin|clarithromycin|metronidazole|flagyl|doxycycline|tinidazole|fluconazole|itraconazole|ketoconazole|acyclovir|valacyclovir|gentamicin|amlodipine|losartan|telmisartan|valsartan|enalapril|lisinopril|ramipril|atenolol|metoprolol|bisoprolol|carvedilol|nebivolol|nifedipine|furosemide|hydrochlorothiazide|spironolactone|atorvastatin|rosuvastatin|simvastatin|metformin|glibenclamide|gliclazide|glimepiride|sitagliptin|vildagliptin|dapagliflozin|empagliflozin|insulin|salbutamol|ventolin|symbicort|seretide|budesonide|fluticasone|montelukast|prednisolone|dexamethasone|hydrocortisone|betamethasone|omeprazole|esomeprazole|pantoprazole|lansoprazole|rabeprazole|diclofenac|celecoxib|etoricoxib|meloxicam|indomethacin|tramadol|codeine|morphine|amitriptyline|fluoxetine|sertraline|escitalopram|citalopram|paroxetine|venlafaxine|duloxetine|alprazolam|diazepam|lorazepam|clonazepam|zolpidem|carbamazepine|valproate|phenytoin|levetiracetam|lamotrigine|pregabalin|gabapentin|sildenafil|tadalafil|finasteride|tamsulosin|testosterone|warfarin|rivaroxaban|apixaban|clopidogrel|levothyroxine|carbimazole|methotrexate|hydroxychloroquine|allopurinol|colchicine|artemether|lumefantrine|coartem)\b/i;
 
 export const STRENGTH_REGEX = /(\d+(\.\d+)?\s*(mg|g|mcg|ml|iu|%))/i;
 export const DOSAGE_FORM_REGEX =
-  /\b(tablet|tablets|tab|tabs|capsule|capsules|cap|caps|syrup|syr|suspension|susp|injection|inj|cream|ointment|drops|inhaler|gel|powder|sachet)\b/i;
+  /\b(tablet|tablets|tab|tabs|syrup|syp|syr|capsule|capsules|cap|caps|suspension|susp|injection|inj|cream|ointment|drops|inhaler|gel|powder|sachet|balm|baln|oil|lotion|spray|lozenge|suppository|pessary|solution|wash|shampoo|ampoule|vial)\b/i;
+export const PACK_SIZE_REGEX =
+  /(?:\b\d+\s*'s\b|\b\d+(?:\.\d+)?\s*(?:ml|g|l|kg|pcs|sachets)\b)/i;
 
 export function generateSlug(name: string, externalId: string): string {
   const base = name
@@ -608,7 +665,9 @@ export class BandaGoNormalizer {
         raw.M_Product_ID ||
         "",
     ).trim();
-    const name = String(raw.name || raw.Name || raw.productName || "").trim();
+    const name = String(raw.name || raw.Name || raw.productName || "")
+      .replace(/\s+/g, " ")
+      .trim();
 
     if (!externalPosId || !name) return null;
 
@@ -629,6 +688,7 @@ export class BandaGoNormalizer {
       raw.bh_generic_name ||
       raw.BH_Concept?.BH_Display_Name ||
       raw.BH_Concept?.bh_display_name ||
+      raw.KnhtsConcept?.Name ||
       raw.KnhtsConcept?.name ||
       null;
 
@@ -699,6 +759,11 @@ export class BandaGoNormalizer {
       Boolean(hasExpirationFlag && resolvedCategory.rx) ||
       resolvedCategory.rx ||
       RX_SCHEDULE_REGEX.test(name);
+
+    // Ensure Rx products never fall into plain OTC category when no specific clinical category matched
+    if (requiresPrescription && resolvedCategory.slug === "otc") {
+      resolvedCategory = CATEGORY_MAP.prescription;
+    }
 
     // Batch & FEFO Expiry Calculation
     // Evaluates M_StorageOnHandList / storageOnHand batches: discards expired stock,
@@ -771,9 +836,9 @@ export class BandaGoNormalizer {
 
         let expiryIso: string | null = null;
 
-        if (expRaw) {
-          const expTime = new Date(expRaw).getTime();
-          if (!isNaN(expTime)) {
+        if (expRaw !== undefined && expRaw !== null && expRaw !== "") {
+          const expTime = parseFlexibleTimestampMs(expRaw);
+          if (expTime !== null) {
             if (expTime < now) {
               // Expired stock is legally unsellable under Kenya PPB guidelines
               continue;
@@ -856,7 +921,7 @@ export class BandaGoNormalizer {
     }
 
     // Pricing parsing: supports BH_SellPrice as well as active retail M_ProductPrices by ValidFrom DESC
-    const price = resolveSellableRetailPrice(raw);
+    const price = roundMoney2dp(resolveSellableRetailPrice(raw));
 
     const costPriceRaw =
       raw.bh_buyprice ??
@@ -869,15 +934,43 @@ export class BandaGoNormalizer {
       raw.CostPrice;
     const costPrice =
       costPriceRaw !== undefined && costPriceRaw !== null
-        ? Math.max(0, Number(costPriceRaw) || 0)
+        ? roundMoney2dp(Math.max(0, Number(costPriceRaw) || 0))
         : null;
 
     const rawDesc = raw.description ?? raw.Description;
     const description = rawDesc ? String(rawDesc).trim() : undefined;
+    const packCountMatch = name.match(/\b\d+\s*'s\b/i)?.[0];
+    const nameWithoutStrength = strengthMatch
+      ? name.replace(strengthMatch[0], " ")
+      : name;
+    const packVolumeMatch = nameWithoutStrength.match(
+      /\b\d+(?:\.\d+)?\s*(?:ml|g|l|kg|pcs|sachets)\b/i,
+    )?.[0];
+    const packFromName = (
+      packCountMatch ||
+      packVolumeMatch ||
+      name.match(PACK_SIZE_REGEX)?.[0]
+    )?.toUpperCase();
     const packSize =
       raw.packSize || raw.pack_size || raw.bh_packsize
         ? String(raw.packSize || raw.pack_size || raw.bh_packsize).trim()
-        : undefined;
+        : packFromName || undefined;
+
+    const rawReorderLevel = raw.bh_reorder_level ?? raw.reorderLevel;
+    const reorderLevel =
+      rawReorderLevel !== undefined &&
+      rawReorderLevel !== null &&
+      Number.isFinite(Number(rawReorderLevel))
+        ? Math.max(0, Math.floor(Number(rawReorderLevel)))
+        : null;
+
+    const rawReorderQty = raw.bh_reorder_quantity ?? raw.reorderQuantity;
+    const reorderQuantity =
+      rawReorderQty !== undefined &&
+      rawReorderQty !== null &&
+      Number.isFinite(Number(rawReorderQty))
+        ? Math.max(0, Math.floor(Number(rawReorderQty)))
+        : null;
 
     const tenantUU =
       (raw.AD_Client?.UU ?? raw.ad_client?.uu ?? raw.tenantUU ?? null) || null;
@@ -895,7 +988,9 @@ export class BandaGoNormalizer {
         raw.sku ||
         raw.SKU ||
         raw.UPC ||
+        raw.KnhtsConcept?.Code ||
         raw.KnhtsConcept?.code ||
+        raw.KnhtsConcept?.Value ||
         raw.BH_Concept?.BH_ExternalID ||
         null,
       name,
@@ -915,6 +1010,8 @@ export class BandaGoNormalizer {
       strength,
       description,
       packSize,
+      reorderLevel,
+      reorderQuantity,
       isActive: !isInactive,
       discontinued: isDiscontinued,
       tenantUU,
@@ -1076,6 +1173,10 @@ export class BandaGoNormalizer {
       batches,
       description,
       packSize,
+      reorderLevel:
+        incoming.reorderLevel ?? existing.reorderLevel ?? null,
+      reorderQuantity:
+        incoming.reorderQuantity ?? existing.reorderQuantity ?? null,
       isActive,
       discontinued,
       tenantUU: incoming.tenantUU || existing.tenantUU || null,
@@ -1196,6 +1297,64 @@ export class BandaGoNormalizer {
 
     return Array.from(normalizedMap.values());
   }
+
+  /**
+   * Extracts the first BandaGo tenant UU (`AD_Client.UU` / `ad_client.uu` / `tenantUU`)
+   * found inside a raw GraphQL payload or batch array.
+   */
+  static extractTenantUU(payload: unknown): string | null {
+    if (!payload || typeof payload !== "object") return null;
+    const seen = new Set<unknown>();
+    const scan = (node: unknown, depth: number): string | null => {
+      if (depth > 8 || !node || typeof node !== "object") return null;
+      if (seen.has(node)) return null;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        for (const el of node) {
+          const hit = scan(el, depth + 1);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      const obj = node as Record<string, any>;
+      const direct =
+        obj.AD_Client?.UU ??
+        obj.ad_client?.uu ??
+        obj.tenantUU ??
+        obj.clientUU;
+      if (typeof direct === "string" && direct.trim()) {
+        return direct.trim();
+      }
+      for (const val of Object.values(obj)) {
+        if (val && typeof val === "object") {
+          const hit = scan(val, depth + 1);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+    return scan(payload, 0);
+  }
 }
 
 export const transformBandaGoRecord = BandaGoNormalizer.normalize;
+
+/**
+ * Identifies whether a discovered API source represents a BandaGo product/inventory/price
+ * dataset (excluding count-only badge queries).
+ */
+export function isBandaGoCatalogSource(source: {
+  normalizedEndpoint?: string;
+  operationName?: string;
+  label?: string;
+}): boolean {
+  const op = (source.operationName || "").trim();
+  const ep = (source.normalizedEndpoint || "").toLowerCase();
+  if (/:count$/i.test(op) || /:count$/i.test(ep)) return false;
+  return (
+    /bandahealth\.org|\/graphql/i.test(ep) &&
+    (/m_productget|m_productforproductlistpage|m_storageonhand|m_productprice|bandago products|bandago inventory|bandago product prices/i.test(
+      `${op} ${ep} ${source.label || ""}`,
+    ))
+  );
+}

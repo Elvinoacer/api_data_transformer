@@ -16,6 +16,13 @@
     M_ProductPriceGet: true,
   };
 
+  const ALLOWED_RESPONSE_ROOT_KEYS: Record<string, true> = {
+    M_StorageOnHandGet: true,
+    M_ProductGet: true,
+    M_ProductPriceGet: true,
+    products: true,
+  };
+
   const ALLOWED_MUTATION_SIGNALS: Record<string, true> = {
     C_OrderProcess: true,
     M_InOutProcess: true,
@@ -24,34 +31,144 @@
     BH_VisitProcess: true,
   };
 
+  let lastReportedEndpointKey = "";
+
   function isGraphqlEndpoint(url: string): boolean {
     if (!url) return false;
-    return /\/graphql\/?(\?|$)/i.test(url);
+    return /(?:^|\/)graphql(?:\/|\?|$)/i.test(url);
   }
 
-  function extractOpName(bodyText: string): string | null {
-    try {
-      const parsed = JSON.parse(bodyText);
-      if (parsed && typeof parsed.operationName === "string" && parsed.operationName) {
-        return parsed.operationName;
-      }
-      if (parsed && typeof parsed.query === "string") {
-        const match = parsed.query.match(/(?:query|mutation)\s+([A-Za-z0-9_]+)/);
-        if (match && match[1]) return match[1];
-      }
-    } catch {}
+  function extractSingleOpName(item: unknown): string | null {
+    if (!item || typeof item !== "object") return null;
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.operationName === "string" && obj.operationName) {
+      return obj.operationName;
+    }
+    if (typeof obj.query === "string") {
+      const match = obj.query.match(/(?:query|mutation)\s+([A-Za-z0-9_]+)/);
+      if (match && match[1]) return match[1];
+    }
     return null;
   }
 
-  function dispatchCatalogIfAllowed(opName: string | null, data: unknown): void {
-    if (!opName || !ALLOWED_CATALOG_OPS[opName]) return;
-    if (!data || typeof data !== "object") return;
+  function inspectGraphqlRequest(bodyText: string): {
+    isBatched: boolean;
+    hasMutation: boolean;
+    mutationOps: string[];
+    opNames: string[];
+  } {
+    const empty = {
+      isBatched: false,
+      hasMutation: false,
+      mutationOps: [] as string[],
+      opNames: [] as string[],
+    };
+    if (!bodyText) return empty;
+    try {
+      const parsed = JSON.parse(bodyText);
+      const isBatched = Array.isArray(parsed);
+      const items = isBatched ? parsed : [parsed];
+      const opNames: string[] = [];
+      const mutationOps: string[] = [];
+
+      for (const item of items) {
+        const op = extractSingleOpName(item);
+        if (op) {
+          opNames.push(op);
+          if (ALLOWED_MUTATION_SIGNALS[op]) {
+            mutationOps.push(op);
+          }
+        }
+        const queryText =
+          item && typeof item === "object" && typeof (item as any).query === "string"
+            ? (item as any).query
+            : "";
+        if (!op && /\bmutation\b/i.test(queryText)) {
+          mutationOps.push("GraphQLMutation");
+        }
+      }
+      return {
+        isBatched,
+        hasMutation: mutationOps.length > 0,
+        mutationOps,
+        opNames,
+      };
+    } catch {}
+    return empty;
+  }
+
+  function notifyDiscoveredEndpoint(url: string, isBatched: boolean): void {
+    try {
+      const parsed = new URL(url, window.location.origin);
+      const safeEndpoint = `${parsed.origin}${parsed.pathname}`;
+      const key = `${safeEndpoint}:${isBatched ? "1" : "0"}`;
+      if (key === lastReportedEndpointKey) return;
+      lastReportedEndpointKey = key;
+      if (
+        typeof document !== "undefined" &&
+        typeof document.dispatchEvent === "function" &&
+        typeof CustomEvent === "function"
+      ) {
+        document.dispatchEvent(
+          new CustomEvent("__SPHERE_BANDAGO_ENDPOINT__", {
+            detail: { endpointUrl: safeEndpoint, usesBatchArray: isBatched },
+          }),
+        );
+      }
+    } catch {}
+  }
+
+  function extractSafeCatalogPayload(
+    json: unknown,
+    reqOpNames: string[],
+  ): { opName: string; data: Record<string, unknown> } | null {
+    const envelopes = Array.isArray(json) ? json : [json];
+    const filteredData: Record<string, unknown> = {};
+    const matchedOps: string[] = [];
+
+    for (let i = 0; i < envelopes.length; i++) {
+      const env = envelopes[i];
+      if (!env || typeof env !== "object" || !(env as any).data) continue;
+      const envData = (env as any).data;
+      if (!envData || typeof envData !== "object" || Array.isArray(envData)) continue;
+
+      const opHint = reqOpNames[i];
+      for (const rootKey of Object.keys(envData)) {
+        if (!ALLOWED_RESPONSE_ROOT_KEYS[rootKey]) continue;
+        const val = envData[rootKey];
+        if (!val || typeof val !== "object") continue;
+
+        // Skip count-only queries (which have PagingInfo but NO Results array)
+        const hasResults =
+          Array.isArray(val) ||
+          (Array.isArray(val.Results) && val.Results.length > 0) ||
+          (Array.isArray(val.results) && val.results.length > 0);
+        if (!hasResults) continue;
+
+        filteredData[rootKey] = val;
+        if (opHint && ALLOWED_CATALOG_OPS[opHint]) {
+          matchedOps.push(opHint);
+        } else {
+          matchedOps.push(rootKey);
+        }
+      }
+    }
+
+    if (Object.keys(filteredData).length === 0) return null;
+    const uniqueOps = Array.from(new Set(matchedOps));
+    return {
+      opName: uniqueOps[0] || "M_ProductGet",
+      data: filteredData,
+    };
+  }
+
+  function dispatchCatalogPayload(opName: string, data: Record<string, unknown>): void {
     window.postMessage(
       {
         source: "SPHERE_BANDAGO_MAIN",
         type: "BANDAGO_PASSIVE_CATALOG",
         operationName: opName,
-        payload: data,
+        payload: { data },
       },
       window.location.origin,
     );
@@ -75,23 +192,27 @@
     window.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
       const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
       const bodyStr = typeof init?.body === "string" ? init.body : "";
-      const opName = isGraphqlEndpoint(url) ? extractOpName(bodyStr) : null;
+      const isGql = isGraphqlEndpoint(url);
+      const reqInfo = isGql ? inspectGraphqlRequest(bodyStr) : null;
 
       return origFetch.call(this, input, init).then((response) => {
-        if (opName && (ALLOWED_CATALOG_OPS[opName] || ALLOWED_MUTATION_SIGNALS[opName]) && response.ok) {
-          if (ALLOWED_MUTATION_SIGNALS[opName]) {
-            dispatchMutationSignalIfAllowed(opName);
-          } else if (ALLOWED_CATALOG_OPS[opName]) {
-            response
-              .clone()
-              .json()
-              .then((json) => {
-                if (json && json.data) {
-                  dispatchCatalogIfAllowed(opName, { data: json.data });
-                }
-              })
-              .catch(() => {});
+        if (isGql && reqInfo && response.ok) {
+          notifyDiscoveredEndpoint(url, reqInfo.isBatched);
+          if (reqInfo.hasMutation) {
+            for (const mOp of reqInfo.mutationOps) {
+              dispatchMutationSignalIfAllowed(mOp);
+            }
           }
+          response
+            .clone()
+            .json()
+            .then((json) => {
+              const safeCatalog = extractSafeCatalogPayload(json, reqInfo.opNames);
+              if (safeCatalog) {
+                dispatchCatalogPayload(safeCatalog.opName, safeCatalog.data);
+              }
+            })
+            .catch(() => {});
         }
         return response;
       });
@@ -111,21 +232,25 @@
     XHR.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
       const url = String((this as unknown as Record<string, unknown>).__sphereUrl || "");
       const bodyStr = typeof body === "string" ? body : "";
-      const opName = isGraphqlEndpoint(url) ? extractOpName(bodyStr) : null;
+      const isGql = isGraphqlEndpoint(url);
+      const reqInfo = isGql ? inspectGraphqlRequest(bodyStr) : null;
 
-      if (opName && (ALLOWED_CATALOG_OPS[opName] || ALLOWED_MUTATION_SIGNALS[opName])) {
+      if (isGql && reqInfo) {
         this.addEventListener("load", () => {
           if (this.status >= 200 && this.status < 300) {
-            if (ALLOWED_MUTATION_SIGNALS[opName]) {
-              dispatchMutationSignalIfAllowed(opName);
-            } else if (ALLOWED_CATALOG_OPS[opName]) {
-              try {
-                const json = JSON.parse(this.responseText);
-                if (json && json.data) {
-                  dispatchCatalogIfAllowed(opName, { data: json.data });
-                }
-              } catch {}
+            notifyDiscoveredEndpoint(url, reqInfo.isBatched);
+            if (reqInfo.hasMutation) {
+              for (const mOp of reqInfo.mutationOps) {
+                dispatchMutationSignalIfAllowed(mOp);
+              }
             }
+            try {
+              const json = JSON.parse(this.responseText);
+              const safeCatalog = extractSafeCatalogPayload(json, reqInfo.opNames);
+              if (safeCatalog) {
+                dispatchCatalogPayload(safeCatalog.opName, safeCatalog.data);
+              }
+            } catch {}
           }
         });
       }

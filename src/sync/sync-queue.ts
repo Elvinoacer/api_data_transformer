@@ -161,6 +161,18 @@ export class SyncQueueManager {
   }
 
   /**
+   * Returns in-flight SYNCING items back to PENDING without incrementing retryCount
+   * or deleting them (used when Sphere inbound sync is paused by admin policy).
+   */
+  static async requeueWithoutPenalty(ids: number[]): Promise<void> {
+    if (ids.length === 0) return;
+    await db.sync_queue.where("id").anyOf(ids).modify({
+      status: "PENDING",
+      updatedAt: Date.now(),
+    });
+  }
+
+  /**
    * Deletes successfully synced items to reclaim IndexedDB storage.
    * Only deletes if the item is still in 'SYNCING' status. If the item was
    * updated with newer stock while sync was in-flight, it will be in 'PENDING'

@@ -338,6 +338,43 @@ export const sourceRepo = {
     if (existing) {
       existing.observedCount += 1;
       existing.lastObservedAt = new Date().toISOString();
+
+      // Auto-upgrade stuck "root" recordPath / generic identity key if a richer collection path is now observed
+      if (params.parsedBody) {
+        const currentItems = extractItemsByPath(
+          params.parsedBody,
+          existing.recordPath,
+        );
+        if (currentItems.length === 0) {
+          const candidatePath = inferBestRecordPath(params.parsedBody);
+          if (candidatePath !== existing.recordPath && candidatePath !== "root") {
+            const candidateItems = extractItemsByPath(
+              params.parsedBody,
+              candidatePath,
+            );
+            if (candidateItems.length > 0) {
+              existing.recordPath = candidatePath;
+              const bestKey = inferBestIdentityKey(candidateItems);
+              if (
+                bestKey !== "__hash__" ||
+                !existing.identityKeyField ||
+                existing.identityKeyField === "id"
+              ) {
+                existing.identityKeyField = bestKey;
+              }
+            }
+          }
+        } else if (
+          !existing.identityKeyField ||
+          existing.identityKeyField === "__hash__"
+        ) {
+          const betterKey = inferBestIdentityKey(currentItems);
+          if (betterKey !== "__hash__") {
+            existing.identityKeyField = betterKey;
+          }
+        }
+      }
+
       if (!existing.label) {
         existing.label = inferDatasetLabel({
           url: params.url,

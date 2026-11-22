@@ -1,7 +1,14 @@
 import { captureController } from "./capture-controller";
 import { BandaGoActivePoller } from "./bandago-poller";
 import { BandaGoWritebackEngine } from "./bandago-writeback";
-import { BandaGoNormalizer } from "../extraction/bandago-normalizer";
+import { cdpAdapter } from "./cdp-adapter";
+import { rawResponseRepo, recordRepo, sourceRepo } from "../data/repositories";
+import { parseApiJsonBody } from "../privacy/source-policy";
+import {
+  BandaGoNormalizer,
+  isBandaGoCatalogSource,
+  type SphereProductInput,
+} from "../extraction/bandago-normalizer";
 import { SphereSyncClient } from "../sync/sphere-client";
 import {
   ExtensionMessage,
@@ -348,6 +355,140 @@ chrome.runtime.onMessage.addListener(
               });
             }, 2000);
             sendResponse({ success: true, data: { scheduled: true } });
+            break;
+          }
+
+          case "BANDAGO_DISCOVERED_ENDPOINT": {
+            const payload = (message.payload || {}) as {
+              endpointUrl?: string;
+              usesBatchArray?: boolean;
+            };
+            if (payload.endpointUrl) {
+              let origin = "https://go.bandahealth.org";
+              try {
+                origin = new URL(
+                  sender.tab?.url || payload.endpointUrl,
+                  origin,
+                ).origin;
+              } catch {}
+              await cdpAdapter.setGraphqlEndpoint(
+                origin,
+                payload.endpointUrl,
+                payload.usesBatchArray,
+              );
+            }
+            sendResponse({ success: true });
+            break;
+          }
+
+          case "SPHERE_SYNC_DISCOVERED_SOURCE": {
+            const cfg = await SphereSyncClient.getConfig();
+            if (!cfg.enabled || !cfg.endpointUrl || !cfg.apiKey) {
+              sendResponse({
+                success: false,
+                error:
+                  "Configure Sphere API endpoint, API key, and enable sync in Settings first.",
+              });
+              break;
+            }
+            const { sourceId, sessionId } = (message.payload || {}) as {
+              sourceId?: string;
+              sessionId?: string;
+            };
+            const targetSessionId =
+              sessionId || captureController.getActiveSession()?.id;
+            const targetSources = sourceId
+              ? await sourceRepo.getSource(sourceId).then((s) => (s ? [s] : []))
+              : targetSessionId
+                ? (await sourceRepo.getSourcesBySession(targetSessionId)).filter(
+                    (s) => isBandaGoCatalogSource(s),
+                  )
+                : [];
+
+            const mergedById = new Map<string, SphereProductInput>();
+            for (const src of targetSources) {
+              const sid = src.sessionId || targetSessionId;
+              if (!sid) continue;
+              const recs = await recordRepo.getRecordsBySource(sid, src.id);
+              const fromRecords = BandaGoNormalizer.extractProductsFromPayload(
+                recs.map((r) => r.rawRecord),
+              );
+              const candidates =
+                fromRecords.length > 0
+                  ? fromRecords
+                  : await (async () => {
+                      const rawResps = await rawResponseRepo.getAllBySession(sid);
+                      const collected: SphereProductInput[] = [];
+                      for (const resp of rawResps) {
+                        if (
+                          resp.normalizedEndpoint !== src.normalizedEndpoint &&
+                          resp.operationName !== src.operationName
+                        ) {
+                          continue;
+                        }
+                        const parsed = parseApiJsonBody(resp.responseBody);
+                        if (parsed.ok) {
+                          collected.push(
+                            ...BandaGoNormalizer.extractProductsFromPayload(
+                              parsed.data,
+                            ),
+                          );
+                        }
+                      }
+                      return collected;
+                    })();
+
+              for (const item of candidates) {
+                const prev = mergedById.get(item.externalPosId);
+                mergedById.set(
+                  item.externalPosId,
+                  prev ? BandaGoNormalizer.mergeProducts(prev, item) : item,
+                );
+              }
+            }
+
+            const products = Array.from(mergedById.values());
+            if (products.length === 0) {
+              sendResponse({
+                success: false,
+                error:
+                  "No BandaGo product or stock rows found in this captured dataset yet.",
+              });
+              break;
+            }
+
+            const detectedTenantUU =
+              products.find((p) => Boolean(p.tenantUU))?.tenantUU ?? null;
+            if (
+              cfg.expectedTenantUU?.trim() &&
+              detectedTenantUU &&
+              cfg.expectedTenantUU.trim() !== detectedTenantUU
+            ) {
+              sendResponse({
+                success: false,
+                error: `Tenant mismatch: expected ${cfg.expectedTenantUU.trim()}, got ${detectedTenantUU}`,
+              });
+              break;
+            }
+
+            await SphereSyncClient.enqueue(
+              products,
+              "CDP_INTERCEPT",
+              detectedTenantUU,
+            );
+            const flush = await SphereSyncClient.flushQueue(
+              "CDP_INTERCEPT",
+              detectedTenantUU,
+            );
+            sendResponse({
+              success: true,
+              data: {
+                normalizedCount: products.length,
+                synced: flush.synced,
+                failed: flush.failed,
+                error: flush.error,
+              },
+            });
             break;
           }
 

@@ -8,6 +8,9 @@ import {
   SessionMetrics,
 } from "../../shared/types";
 import { getMissingPages } from "../../extraction/pagination-detector";
+import { isBandaGoCatalogSource } from "../../extraction/bandago-normalizer";
+import { sendExtensionMessage } from "../../messaging/protocol";
+import { useToast } from "../components/ToastProvider";
 import {
   Activity,
   FileCheck2,
@@ -27,6 +30,8 @@ import {
   Cpu,
   User,
   Eraser,
+  Radio,
+  RefreshCw,
 } from "lucide-react";
 import { DashboardTab } from "../components/Header";
 
@@ -59,8 +64,84 @@ export const Overview: React.FC<Props> = ({
   onQuickExportSource,
   onClearTabData,
 }) => {
+  const { notify } = useToast();
   const [isEditingSessionLabel, setIsEditingSessionLabel] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
+  const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
+  const [isFullPolling, setIsFullPolling] = useState(false);
+
+  const handleSyncSourceToSphere = async (src: EndpointSource) => {
+    setSyncingSourceId(src.id);
+    try {
+      const res = await sendExtensionMessage<
+        { sourceId: string; sessionId: string },
+        { normalizedCount: number; synced: number; failed: number; error?: string }
+      >("SPHERE_SYNC_DISCOVERED_SOURCE", {
+        sourceId: src.id,
+        sessionId: src.sessionId,
+      });
+      if (!res.success) {
+        notify({
+          title: "Sphere Sync Not Ready",
+          description: res.error || "Configure Sphere sync in Settings.",
+          variant: "warning",
+          actor: "user",
+        });
+        if (res.error?.toLowerCase().includes("settings")) {
+          onNavigateTab("settings");
+        }
+      } else if (res.data?.error) {
+        notify({
+          title: `Synced ${res.data.synced}/${res.data.normalizedCount} to Sphere`,
+          description: res.data.error,
+          variant: "warning",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: `Synced ${res.data?.synced ?? 0} medicine(s) to Sphere`,
+          description: `Pushed "${src.label}" directly to Sphere Pharmacy.`,
+          variant: "success",
+          actor: "user",
+        });
+      }
+    } finally {
+      setSyncingSourceId(null);
+    }
+  };
+
+  const handleFullCatalogPollAndSync = async () => {
+    setIsFullPolling(true);
+    try {
+      const pollRes = await sendExtensionMessage<
+        undefined,
+        { success: boolean; count: number; message: string }
+      >("BANDAGO_TRIGGER_POLL");
+      const flushRes = await sendExtensionMessage<
+        undefined,
+        { synced: number; failed: number; error?: string }
+      >("SPHERE_FLUSH_QUEUE");
+      if (!pollRes.success || pollRes.data?.success === false) {
+        notify({
+          title: "Full Catalog Poll Attention",
+          description:
+            pollRes.data?.message || pollRes.error || "Could not poll BandaGo tab.",
+          variant: "warning",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: `Full Catalog Sync: ${flushRes.data?.synced ?? pollRes.data?.count ?? 0} product(s)`,
+          description:
+            flushRes.data?.error || pollRes.data?.message || "Synced BandaGo catalog to Sphere.",
+          variant: flushRes.data?.error ? "warning" : "success",
+          actor: "user",
+        });
+      }
+    } finally {
+      setIsFullPolling(false);
+    }
+  };
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 B";
@@ -508,8 +589,8 @@ export const Overview: React.FC<Props> = ({
                       )}
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-stone-200/60">
-                    <div className="flex items-center gap-1.5">
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-stone-200/60 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <button
                         type="button"
                         onClick={() => onNavigateTab("records", src.id)}
@@ -531,6 +612,37 @@ export const Overview: React.FC<Props> = ({
                             Fetch Pages
                           </button>
                         )}
+                      {isBandaGoCatalogSource(src) && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={count === 0 || syncingSourceId === src.id}
+                            onClick={() => handleSyncSourceToSphere(src)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-[11px] font-bold transition"
+                          >
+                            <Radio
+                              className={`w-3 h-3 ${syncingSourceId === src.id ? "animate-pulse" : ""}`}
+                              aria-hidden="true"
+                            />
+                            {syncingSourceId === src.id
+                              ? "Syncing..."
+                              : "Sync to Sphere"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isFullPolling}
+                            onClick={handleFullCatalogPollAndSync}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 disabled:opacity-40 text-emerald-900 text-[11px] font-bold transition"
+                            title="Query all pages directly via authenticated BandaGo GraphQL endpoint & sync to Sphere"
+                          >
+                            <RefreshCw
+                              className={`w-3 h-3 ${isFullPolling ? "animate-spin" : ""}`}
+                              aria-hidden="true"
+                            />
+                            {isFullPolling ? "Polling..." : "Full Catalog Sync"}
+                          </button>
+                        </>
+                      )}
                     </div>
 
                     <button

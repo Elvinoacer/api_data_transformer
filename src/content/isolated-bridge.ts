@@ -38,4 +38,26 @@
       } catch {}
     }
   });
+
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("__SPHERE_BANDAGO_ENDPOINT__", (event: Event) => {
+      const custom = event as CustomEvent<{
+        endpointUrl?: string;
+        usesBatchArray?: boolean;
+      }>;
+      const endpointUrl = custom?.detail?.endpointUrl;
+      if (typeof endpointUrl !== "string" || !endpointUrl) return;
+      try {
+        chrome.runtime
+          .sendMessage({
+            type: "BANDAGO_DISCOVERED_ENDPOINT",
+            payload: {
+              endpointUrl,
+              usesBatchArray: Boolean(custom.detail?.usesBatchArray),
+            },
+          })
+          .catch(() => {});
+      } catch {}
+    });
+  }
 })();

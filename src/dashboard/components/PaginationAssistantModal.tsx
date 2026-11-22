@@ -8,6 +8,9 @@ import {
   EndpointSource,
 } from "../../shared/types";
 import { getMissingPages } from "../../extraction/pagination-detector";
+import { isBandaGoCatalogSource } from "../../extraction/bandago-normalizer";
+import { sendExtensionMessage } from "../../messaging/protocol";
+import { useToast } from "./ToastProvider";
 import {
   MousePointerClick,
   Link2,
@@ -17,6 +20,7 @@ import {
   Loader2,
   CheckCircle2,
   Sparkles,
+  RefreshCw,
 } from "lucide-react";
 
 interface Props {
@@ -42,6 +46,7 @@ export const PaginationAssistantModal: React.FC<Props> = ({
   onStartAutoPaginate,
   onStopAutoPaginate,
 }) => {
+  const { notify } = useToast();
   const [selectedSourceId, setSelectedSourceId] = useState<string>(
     initialSourceId || sources[0]?.id || "",
   );
@@ -49,6 +54,40 @@ export const PaginationAssistantModal: React.FC<Props> = ({
   const [delaySeconds, setDelaySeconds] = useState<number>(1.8);
   const [maxPages, setMaxPages] = useState<number>(15);
   const [customSelector, setCustomSelector] = useState<string>("");
+  const [isDirectPolling, setIsDirectPolling] = useState(false);
+
+  const handleDirectBandaGoPoll = async () => {
+    setIsDirectPolling(true);
+    try {
+      const pollRes = await sendExtensionMessage<
+        undefined,
+        { success: boolean; count: number; message: string }
+      >("BANDAGO_TRIGGER_POLL");
+      const flushRes = await sendExtensionMessage<
+        undefined,
+        { synced: number; failed: number; error?: string }
+      >("SPHERE_FLUSH_QUEUE");
+      if (!pollRes.success || pollRes.data?.success === false) {
+        notify({
+          title: "Direct Poll Failed",
+          description:
+            pollRes.data?.message || pollRes.error || "Could not poll BandaGo tab.",
+          variant: "warning",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: `Full Catalog Synced (${flushRes.data?.synced ?? pollRes.data?.count ?? 0})`,
+          description:
+            flushRes.data?.error || pollRes.data?.message || "Synced BandaGo catalog to Sphere.",
+          variant: flushRes.data?.error ? "warning" : "success",
+          actor: "user",
+        });
+      }
+    } finally {
+      setIsDirectPolling(false);
+    }
+  };
 
   useEffect(() => {
     if (initialSourceId && sources.some((s) => s.id === initialSourceId)) {
@@ -252,6 +291,31 @@ export const PaginationAssistantModal: React.FC<Props> = ({
                   )}
                 </div>
               )}
+
+            {selectedSource && isBandaGoCatalogSource(selectedSource) && (
+              <div className="mt-2.5 p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="text-emerald-950">
+                  <strong className="block">BandaGo Direct GraphQL Sync Available</strong>
+                  <span className="text-[11px] text-emerald-800">
+                    Fetches all catalog pages via your authenticated BandaGo tab and pushes directly to Sphere Pharmacy without waiting for UI clicks.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={isDirectPolling}
+                  onClick={handleDirectBandaGoPoll}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[11px] font-bold transition flex-shrink-0"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${isDirectPolling ? "animate-spin" : ""}`}
+                    aria-hidden="true"
+                  />
+                  {isDirectPolling
+                    ? "Polling & Syncing..."
+                    : "Run Direct Full-Catalog Poll to Sphere (Fast)"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

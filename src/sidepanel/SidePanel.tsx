@@ -30,6 +30,7 @@ import {
 } from "../messaging/protocol";
 import { generateFlattenedCsv } from "../export/csv";
 import { generateExportFilename } from "../export/filenames";
+import { isBandaGoCatalogSource } from "../extraction/bandago-normalizer";
 import {
   OutboundRunStatus,
   ServerSyncPolicy,
@@ -96,6 +97,40 @@ const SidePanelWorkspace: React.FC = () => {
   const [serverPolicy, setServerPolicy] = useState<ServerSyncPolicy>({});
   const [isSyncingNow, setIsSyncingNow] = useState(false);
   const [isSyncingOutbound, setIsSyncingOutbound] = useState(false);
+  const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
+
+  const handleSyncSourceFromSidepanel = async (s: EndpointSource) => {
+    setSyncingSourceId(s.id);
+    try {
+      const res = await sendExtensionMessage<
+        { sourceId: string; sessionId: string },
+        { normalizedCount: number; synced: number; failed: number; error?: string }
+      >("SPHERE_SYNC_DISCOVERED_SOURCE", {
+        sourceId: s.id,
+        sessionId: s.sessionId,
+      });
+      await refresh();
+      if (!res.success) {
+        notify({
+          title: "Sphere Sync Alert",
+          description: res.error || "Could not sync dataset.",
+          variant: "warning",
+          actor: "user",
+        });
+      } else {
+        notify({
+          title: `Synced ${res.data?.synced ?? 0} to Sphere`,
+          description:
+            res.data?.error ||
+            `Normalized ${res.data?.normalizedCount ?? 0} rows from ${s.label}.`,
+          variant: res.data?.error ? "warning" : "success",
+          actor: "user",
+        });
+      }
+    } finally {
+      setSyncingSourceId(null);
+    }
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -858,16 +893,33 @@ const SidePanelWorkspace: React.FC = () => {
                         </span>
                       </div>
 
-                      <button
-                        type="button"
-                        disabled={count === 0}
-                        onClick={() => handleQuickExportSource(s)}
-                        title={`Export ${s.label} CSV`}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-brand-100 hover:bg-brand-200 disabled:opacity-40 text-brand-950 border border-brand-300 rounded-lg text-[10px] font-bold transition flex-shrink-0"
-                      >
-                        <Download className="w-3 h-3" aria-hidden="true" />
-                        CSV ({count})
-                      </button>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {isBandaGoCatalogSource(s) && (
+                          <button
+                            type="button"
+                            disabled={count === 0 || syncingSourceId === s.id}
+                            onClick={() => handleSyncSourceFromSidepanel(s)}
+                            title={`Sync ${s.label} to Sphere Pharmacy`}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded-lg text-[10px] font-bold transition"
+                          >
+                            <Radio
+                              className={`w-3 h-3 ${syncingSourceId === s.id ? "animate-pulse" : ""}`}
+                              aria-hidden="true"
+                            />
+                            {syncingSourceId === s.id ? "..." : "Sync"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={count === 0}
+                          onClick={() => handleQuickExportSource(s)}
+                          title={`Export ${s.label} CSV`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-brand-100 hover:bg-brand-200 disabled:opacity-40 text-brand-950 border border-brand-300 rounded-lg text-[10px] font-bold transition flex-shrink-0"
+                        >
+                          <Download className="w-3 h-3" aria-hidden="true" />
+                          CSV ({count})
+                        </button>
+                      </div>
                     </div>
 
                     {pag && pag.strategy !== "none" && (

@@ -41,6 +41,57 @@ export class CdpNetworkAdapter {
   private requestPayloadMap = new Map<string, CachedPayload>();
   private listeners: ((response: EmittedCdpResponse) => void)[] = [];
   private static inMemoryAuthHeaders = new Map<string, string>();
+  private static inMemoryGqlEndpoints = new Map<
+    string,
+    { endpointUrl: string; usesBatchArray?: boolean }
+  >();
+
+  /**
+   * Records discovered GraphQL endpoint URL (origin + pathname only, Zero-PHI) for poller & writeback.
+   */
+  static async setGraphqlEndpoint(
+    origin: string,
+    endpointUrl: string,
+    usesBatchArray?: boolean,
+  ): Promise<void> {
+    let safeEndpoint = "/graphql/";
+    try {
+      const parsed = new URL(endpointUrl, origin);
+      safeEndpoint = `${parsed.origin}${parsed.pathname}`;
+    } catch {
+      safeEndpoint = endpointUrl.split("?")[0].split("#")[0] || "/graphql/";
+    }
+    const entry = { endpointUrl: safeEndpoint, usesBatchArray };
+    this.inMemoryGqlEndpoints.set(origin, entry);
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          [`bandago_gql_endpoint_${origin}`]: entry,
+        });
+      }
+    } catch {}
+  }
+
+  /**
+   * Retrieves previously discovered GraphQL endpoint URL + batch mode for origin.
+   */
+  static async getGraphqlEndpoint(
+    origin = "https://go.bandahealth.org",
+  ): Promise<{ endpointUrl: string; usesBatchArray?: boolean } | null> {
+    const mem = this.inMemoryGqlEndpoints.get(origin);
+    if (mem) return mem;
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        const key = `bandago_gql_endpoint_${origin}`;
+        const res = await chrome.storage.local.get([key]);
+        if (res && res[key] && typeof res[key].endpointUrl === "string") {
+          this.inMemoryGqlEndpoints.set(origin, res[key]);
+          return res[key];
+        }
+      }
+    } catch {}
+    return null;
+  }
 
   /**
    * Retrieves captured BandaGo Bearer Authorization token for origin.
@@ -92,9 +143,17 @@ export class CdpNetworkAdapter {
 
     if (method === "Network.requestWillBeSent") {
       const { requestId, request } = params || {};
-      if (requestId && request?.postData) {
+      const resolvedPostData =
+        typeof request?.postData === "string"
+          ? request.postData
+          : Array.isArray(request?.postDataEntries)
+            ? request.postDataEntries
+                .map((e: any) => (typeof e?.bytes === "string" ? e.bytes : ""))
+                .join("")
+            : undefined;
+      if (requestId && resolvedPostData) {
         this.requestPayloadMap.set(requestId, {
-          postData: request.postData,
+          postData: resolvedPostData,
           timestamp: Date.now(),
         });
       }
@@ -250,6 +309,12 @@ export const cdpAdapter = {
           'a[rel="next"]',
           'button[rel="next"]',
           '[aria-label*="next page" i]',
+          'button[aria-label*="next" i]',
+          'a[aria-label*="next" i]',
+          'button[title*="next" i]',
+          '.MuiTablePagination-actions button:last-of-type',
+          'button:has(.fa-chevron-right)',
+          'button:has(.fa-angle-right)',
           'button[aria-label="Next" i]',
           'a[aria-label="Next" i]',
           '[data-testid*="next" i]'
@@ -395,5 +460,23 @@ export const cdpAdapter = {
 
   async setAuthHeader(origin: string, auth: string): Promise<void> {
     return CdpNetworkAdapter.setAuthHeader(origin, auth);
+  },
+
+  async getGraphqlEndpoint(
+    origin?: string,
+  ): Promise<{ endpointUrl: string; usesBatchArray?: boolean } | null> {
+    return CdpNetworkAdapter.getGraphqlEndpoint(origin);
+  },
+
+  async setGraphqlEndpoint(
+    origin: string,
+    endpointUrl: string,
+    usesBatchArray?: boolean,
+  ): Promise<void> {
+    return CdpNetworkAdapter.setGraphqlEndpoint(
+      origin,
+      endpointUrl,
+      usesBatchArray,
+    );
   },
 };

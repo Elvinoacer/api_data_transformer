@@ -11,6 +11,8 @@ import {
 } from "../../extraction/path-selector";
 import { parseApiJsonBody } from "../../privacy/source-policy";
 import { getMissingPages } from "../../extraction/pagination-detector";
+import { isBandaGoCatalogSource } from "../../extraction/bandago-normalizer";
+import { sendExtensionMessage } from "../../messaging/protocol";
 import {
   Layers,
   RefreshCw,
@@ -21,6 +23,7 @@ import {
   FastForward,
   Sparkles,
   Database,
+  Radio,
 } from "lucide-react";
 import { useToast } from "../components/ToastProvider";
 
@@ -57,6 +60,44 @@ export const Sources: React.FC<Props> = ({
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [quickLabel, setQuickLabel] = useState("");
+  const [syncingSourceId, setSyncingSourceId] = useState<string | null>(null);
+
+  const handleSyncToSphere = async (source: EndpointSource) => {
+    setSyncingSourceId(source.id);
+    try {
+      const res = await sendExtensionMessage<
+        { sourceId: string; sessionId: string },
+        { normalizedCount: number; synced: number; failed: number; error?: string }
+      >("SPHERE_SYNC_DISCOVERED_SOURCE", {
+        sourceId: source.id,
+        sessionId: source.sessionId,
+      });
+      if (!res.success) {
+        notify({
+          title: "Sphere Sync Attention",
+          description: res.error || "Could not sync dataset to Sphere.",
+          variant: "warning",
+          actor: "user",
+        });
+      } else if (res.data?.error) {
+        notify({
+          title: `Synced ${res.data.synced}/${res.data.normalizedCount} to Sphere`,
+          description: res.data.error,
+          variant: "warning",
+          actor: "system",
+        });
+      } else {
+        notify({
+          title: `Synced ${res.data?.synced ?? 0} product(s) to Sphere`,
+          description: `Normalized ${res.data?.normalizedCount ?? 0} items from "${source.label}".`,
+          variant: "success",
+          actor: "user",
+        });
+      }
+    } finally {
+      setSyncingSourceId(null);
+    }
+  };
 
   const startEdit = (source: EndpointSource) => {
     setEditingId(source.id);
@@ -327,6 +368,21 @@ export const Sources: React.FC<Props> = ({
                       Records
                     </button>
 
+                    {isBandaGoCatalogSource(source) && (
+                      <button
+                        type="button"
+                        disabled={syncingSourceId === source.id}
+                        onClick={() => handleSyncToSphere(source)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition"
+                      >
+                        <Radio
+                          className={`w-3.5 h-3.5 ${syncingSourceId === source.id ? "animate-pulse" : ""}`}
+                          aria-hidden="true"
+                        />
+                        {syncingSourceId === source.id ? "Syncing..." : "Sync to Sphere"}
+                      </button>
+                    )}
+
                     {(missingPages.length > 0 || pag?.hasNextPage) &&
                       canAutoPaginate && (
                         <button
@@ -466,7 +522,7 @@ export const Sources: React.FC<Props> = ({
                         className="w-full px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-mono text-obsidian-900"
                       />
                       <div className="mt-1.5 flex flex-wrap gap-1">
-                        {["id", "_id", "uuid", "sku", "code", "__hash__"].map(
+                        {["UU", "id", "_id", "uuid", "sku", "code", "__hash__"].map(
                           (k) => (
                             <button
                               key={k}

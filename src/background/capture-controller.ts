@@ -342,12 +342,19 @@ class CaptureController {
       const requestId = params?.requestId;
       const req = params?.request;
       if (requestId && req) {
+        const resolvedPostData =
+          typeof req.postData === "string"
+            ? req.postData.slice(0, 1048576)
+            : Array.isArray(req.postDataEntries)
+              ? req.postDataEntries
+                  .map((e: any) => (typeof e?.bytes === "string" ? e.bytes : ""))
+                  .join("")
+                  .slice(0, 1048576) || undefined
+              : undefined;
+
         this.trackedRequests.set(requestId, {
           httpMethod: (req.method || "GET").toUpperCase(),
-          postData:
-            typeof req.postData === "string"
-              ? req.postData.slice(0, 1048576)
-              : undefined,
+          postData: resolvedPostData,
           timestamp: Date.now(),
         });
 
@@ -358,6 +365,13 @@ class CaptureController {
             try {
               const origin = new URL(url).origin;
               cdpAdapter.setAuthHeader(origin, auth).catch(() => {});
+              cdpAdapter
+                .setGraphqlEndpoint(
+                  origin,
+                  url,
+                  resolvedPostData?.trim().startsWith("[") || undefined,
+                )
+                .catch(() => {});
             } catch {}
           }
         }
@@ -515,15 +529,24 @@ class CaptureController {
     const parsed = parseResult.data;
 
     // Fix 4: Support Batched Apollo GraphQL Responses (top-level arrays)
-    const envelopes =
+    const isBatchedArray =
       Array.isArray(parsed) &&
       parsed.length > 0 &&
       parsed.every(
         (el) =>
           el && typeof el === "object" && ("data" in el || "errors" in el),
-      )
-        ? parsed
-        : [parsed];
+      );
+    const envelopes = isBatchedArray ? parsed : [parsed];
+
+    // Record discovered GraphQL endpoint URL + batch mode for active poller & writeback
+    if (pending.url.toLowerCase().includes("/graphql")) {
+      try {
+        const origin = new URL(pending.url).origin;
+        cdpAdapter
+          .setGraphqlEndpoint(origin, pending.url, isBatchedArray)
+          .catch(() => {});
+      } catch {}
+    }
 
     // Attempt to match batched GraphQL request operations if pending.postData was an array
     let postDataBatch: any[] | null = null;
@@ -536,15 +559,16 @@ class CaptureController {
       } catch {}
     }
 
-    for (const [idx, envelope] of envelopes.entries()) {
-      await this.handleBandaGoPayload(
-        pending.url,
-        pending.postData,
-        envelope,
-        "CDP_INTERCEPT",
-      );
+    // Invoke BandaGo catalog handler ONCE on the entire parsed batch so M_ProductGet + M_StorageOnHandGet merge properly
+    await this.handleBandaGoPayload(
+      pending.url,
+      pending.postData,
+      parsed,
+      "CDP_INTERCEPT",
+    );
 
-      let envelopeOpName = operationName;
+    for (const [idx, envelope] of envelopes.entries()) {
+      let envelopeOpName = envelopes.length === 1 ? operationName : undefined;
       let envelopePostData = pending.postData;
 
       if (postDataBatch && postDataBatch[idx]) {
@@ -555,19 +579,36 @@ class CaptureController {
           (typeof opItem.query === "string"
             ? opItem.query.match(/\b(?:query|mutation)\s+([A-Za-z0-9_]+)/)?.[1]
             : undefined) ||
-          operationName;
+          (envelopes.length === 1 ? operationName : undefined);
       }
 
-      if (
-        !envelopeOpName &&
+      const envelopeDataKeys =
         envelope &&
         typeof envelope === "object" &&
         envelope.data &&
-        typeof envelope.data === "object"
-      ) {
-        const dataKeys = Object.keys(envelope.data);
-        if (dataKeys.length === 1) {
-          envelopeOpName = dataKeys[0];
+        typeof envelope.data === "object" &&
+        !Array.isArray(envelope.data)
+          ? Object.keys(envelope.data)
+          : [];
+
+      if (!envelopeOpName && envelopeDataKeys.length === 1) {
+        envelopeOpName = envelopeDataKeys[0];
+      }
+
+      // Separate count-only GraphQL queries (e.g. { PagingInfo: { TotalCount: 24 } } without Results)
+      // so badge counts never clobber the main dataset's recordPath or 1,349-row pagination!
+      if (envelopeDataKeys.length === 1) {
+        const rootKey = envelopeDataKeys[0];
+        const rootVal = envelope.data[rootKey];
+        if (
+          rootVal &&
+          typeof rootVal === "object" &&
+          !Array.isArray(rootVal) &&
+          !("Results" in rootVal) &&
+          !("results" in rootVal) &&
+          ("PagingInfo" in rootVal || "pageInfo" in rootVal)
+        ) {
+          envelopeOpName = `${envelopeOpName || rootKey}:count`;
         }
       }
 
@@ -658,11 +699,53 @@ class CaptureController {
         BandaGoNormalizer.extractProductsFromPayload(dataNode);
 
       if (normalizedProducts.length > 0) {
+        const detectedTenantUU =
+          BandaGoNormalizer.extractTenantUU(dataNode) ||
+          normalizedProducts.find((item) => Boolean(item.tenantUU))?.tenantUU ||
+          null;
+        const sphereCfg = await SphereSyncClient.getConfig();
+        if (
+          sphereCfg.expectedTenantUU?.trim() &&
+          detectedTenantUU &&
+          sphereCfg.expectedTenantUU.trim() !== detectedTenantUU
+        ) {
+          const mismatchMsg = `Blocked CDP payload from unexpected BandaGo tenant ${detectedTenantUU} (expected ${sphereCfg.expectedTenantUU.trim()})`;
+          console.warn(`[BandaGo POS] ${mismatchMsg}`);
+          await SphereSyncClient.recordError({
+            source: "SYNC_FLUSH",
+            message: mismatchMsg,
+          }).catch(() => {});
+          await SphereSyncClient.reportTelemetry({
+            errors: [
+              {
+                direction: "INBOUND",
+                source: "CDP_INTERCEPT",
+                severity: "CRITICAL",
+                code: "TENANT_MISMATCH",
+                message: mismatchMsg,
+              },
+            ],
+          }).catch(() => {});
+          return;
+        }
+
         console.log(
           `[BandaGo POS] Intercepted ${normalizedProducts.length} medications from ${sourceUrl}. Queueing Sphere sync...`,
         );
-        if (trigger) {
+        if (trigger && detectedTenantUU) {
+          await SphereSyncClient.enqueue(
+            normalizedProducts,
+            trigger,
+            detectedTenantUU,
+          );
+        } else if (trigger) {
           await SphereSyncClient.enqueue(normalizedProducts, trigger);
+        } else if (detectedTenantUU) {
+          await SphereSyncClient.enqueue(
+            normalizedProducts,
+            "CDP_INTERCEPT",
+            detectedTenantUU,
+          );
         } else {
           await SphereSyncClient.enqueue(normalizedProducts);
         }
