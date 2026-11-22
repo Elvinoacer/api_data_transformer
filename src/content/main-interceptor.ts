@@ -118,6 +118,43 @@
     } catch {}
   }
 
+  function mergeCatalogRootValue(prevVal: any, nextVal: any): any {
+    if (!prevVal) return nextVal;
+    const prevArr = Array.isArray(prevVal)
+      ? prevVal
+      : Array.isArray(prevVal.Results)
+        ? prevVal.Results
+        : Array.isArray(prevVal.results)
+          ? prevVal.results
+          : null;
+    const nextArr = Array.isArray(nextVal)
+      ? nextVal
+      : Array.isArray(nextVal.Results)
+        ? nextVal.Results
+        : Array.isArray(nextVal.results)
+          ? nextVal.results
+          : null;
+
+    if (prevArr && nextArr) {
+      if (Array.isArray(prevVal)) {
+        return [...prevArr, ...nextArr];
+      }
+      if (Array.isArray(prevVal.Results)) {
+        return {
+          ...prevVal,
+          PagingInfo: nextVal.PagingInfo || prevVal.PagingInfo,
+          Results: [...prevArr, ...nextArr],
+        };
+      }
+      return {
+        ...prevVal,
+        PagingInfo: nextVal.PagingInfo || prevVal.PagingInfo,
+        results: [...prevArr, ...nextArr],
+      };
+    }
+    return nextVal;
+  }
+
   function extractSafeCatalogPayload(
     json: unknown,
     reqOpNames: string[],
@@ -145,7 +182,9 @@
           (Array.isArray(val.results) && val.results.length > 0);
         if (!hasResults) continue;
 
-        filteredData[rootKey] = val;
+        filteredData[rootKey] = filteredData[rootKey]
+          ? mergeCatalogRootValue(filteredData[rootKey], val)
+          : val;
         if (opHint && ALLOWED_CATALOG_OPS[opHint]) {
           matchedOps.push(opHint);
         } else {
@@ -191,23 +230,48 @@
   if (typeof origFetch === "function") {
     window.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
       const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
-      const bodyStr = typeof init?.body === "string" ? init.body : "";
+      const syncBodyStr = typeof init?.body === "string" ? init.body : "";
       const isGql = isGraphqlEndpoint(url);
-      const reqInfo = isGql ? inspectGraphqlRequest(bodyStr) : null;
+      const syncReqInfo = isGql && syncBodyStr ? inspectGraphqlRequest(syncBodyStr) : null;
+      const clonedReqPromise =
+        isGql &&
+        !syncBodyStr &&
+        typeof Request !== "undefined" &&
+        input instanceof Request &&
+        typeof input.clone === "function"
+          ? input
+              .clone()
+              .text()
+              .then((txt) => inspectGraphqlRequest(txt))
+              .catch(() => null)
+          : null;
 
       return origFetch.call(this, input, init).then((response) => {
-        if (isGql && reqInfo && response.ok) {
-          notifyDiscoveredEndpoint(url, reqInfo.isBatched);
-          if (reqInfo.hasMutation) {
-            for (const mOp of reqInfo.mutationOps) {
-              dispatchMutationSignalIfAllowed(mOp);
+        if (isGql && response.ok) {
+          if (syncReqInfo) {
+            if (syncReqInfo.hasMutation) {
+              for (const mOp of syncReqInfo.mutationOps) {
+                dispatchMutationSignalIfAllowed(mOp);
+              }
             }
           }
-          response
-            .clone()
-            .json()
-            .then((json) => {
-              const safeCatalog = extractSafeCatalogPayload(json, reqInfo.opNames);
+
+          const jsonPromise = response.clone().json().catch(() => null);
+          const reqInfoPromise = clonedReqPromise || Promise.resolve(syncReqInfo);
+
+          Promise.all([reqInfoPromise, jsonPromise])
+            .then(([resolvedReqInfo, json]) => {
+              const info = resolvedReqInfo || inspectGraphqlRequest("");
+              if (!syncReqInfo && info.hasMutation) {
+                for (const mOp of info.mutationOps) {
+                  dispatchMutationSignalIfAllowed(mOp);
+                }
+              }
+              const effectiveIsBatched =
+                info.isBatched || Array.isArray(json);
+              notifyDiscoveredEndpoint(url, effectiveIsBatched);
+              if (!json) return;
+              const safeCatalog = extractSafeCatalogPayload(json, info.opNames);
               if (safeCatalog) {
                 dispatchCatalogPayload(safeCatalog.opName, safeCatalog.data);
               }

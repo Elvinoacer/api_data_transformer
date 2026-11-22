@@ -52,6 +52,126 @@ export interface TelemetryReportInput {
   }>;
 }
 
+export interface EndpointValidationResult {
+  normalizedUrl: string;
+  suggestedFix?: string;
+  warning?: string;
+}
+
+/**
+ * Validates and detects common typos in the Sphere BandaGo ingestion endpoint URL
+ * (e.g. `intergrations` -> `integrations`, `bandgo` -> `bandago`, or bare site root).
+ */
+export function validateSphereEndpointUrl(
+  rawUrl: string,
+): EndpointValidationResult {
+  const trimmed = (rawUrl || "").trim();
+  if (!trimmed) {
+    return { normalizedUrl: "" };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return {
+      normalizedUrl: trimmed,
+      warning:
+        "Invalid URL format. Expected https://<your-sphere-domain>/api/integrations/bandago/sync",
+    };
+  }
+
+  const pathname = parsed.pathname || "/";
+  if (/\/intergrations?(?:\/|$)/i.test(pathname)) {
+    const fixedPath = pathname.replace(/\/intergrations?(?=\/|$)/i, "/integrations");
+    const hasSyncSuffix = /\/integrations\/bandago\/sync\/?$/i.test(fixedPath);
+    const finalPath = hasSyncSuffix
+      ? fixedPath
+      : "/api/integrations/bandago/sync";
+    return {
+      normalizedUrl: trimmed,
+      suggestedFix: `${parsed.origin}${finalPath}`,
+      warning:
+        'Typo detected in URL ("intergrations" should be "integrations"). Requests to the misspelled path hit HTML instead of the sync API.',
+    };
+  }
+
+  if (/\/bandgo(?:\/|$)/i.test(pathname)) {
+    const fixedPath = pathname.replace(/\/bandgo(?=\/|$)/i, "/bandago");
+    return {
+      normalizedUrl: trimmed,
+      suggestedFix: `${parsed.origin}${fixedPath}`,
+      warning: 'Typo detected in URL ("bandgo" should be "bandago").',
+    };
+  }
+
+  if (pathname === "/" || pathname === "") {
+    return {
+      normalizedUrl: trimmed,
+      suggestedFix: `${parsed.origin}/api/integrations/bandago/sync`,
+      warning:
+        "URL points to the site root rather than the sync API route (/api/integrations/bandago/sync).",
+    };
+  }
+
+  if (
+    /\/api\/integrations\/bandago\/?$/i.test(pathname)
+  ) {
+    return {
+      normalizedUrl: trimmed,
+      suggestedFix: `${parsed.origin}/api/integrations/bandago/sync`,
+      warning:
+        "URL is missing the trailing /sync path segment (/api/integrations/bandago/sync).",
+    };
+  }
+
+  return { normalizedUrl: trimmed };
+}
+
+async function parseSphereJsonResponse(
+  response: Response,
+  endpointUrl: string,
+): Promise<
+  { ok: true; data: Record<string, any> } | { ok: false; error: string }
+> {
+  const validation = validateSphereEndpointUrl(endpointUrl);
+  const hint = validation.suggestedFix
+    ? ` Did you mean ${validation.suggestedFix}?`
+    : " Expected a Sphere JSON API endpoint ending in /api/integrations/bandago/sync.";
+
+  const contentType =
+    (typeof response.headers?.get === "function"
+      ? response.headers.get("content-type")
+      : (response.headers as any)?.["content-type"]) || "";
+
+  if (contentType && !contentType.toLowerCase().includes("json")) {
+    return {
+      ok: false,
+      error: `Endpoint returned non-JSON response (${contentType.split(";")[0].trim()}) instead of Sphere API JSON.${hint}`,
+    };
+  }
+
+  if (typeof response.json === "function") {
+    try {
+      const data = await response.json();
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        return {
+          ok: false,
+          error: `Endpoint returned unexpected JSON shape.${hint}`,
+        };
+      }
+      return { ok: true, data };
+    } catch {
+      return {
+        ok: false,
+        error: `Endpoint returned invalid JSON (likely an HTML page instead of the Sphere API).${hint}`,
+      };
+    }
+  }
+
+  return { ok: true, data: {} };
+}
+
 /**
  * Derives a sibling BandaGo integration URL (e.g. /outbound, /outbound/ack, /telemetry)
  * cleanly from the configured /api/integrations/bandago/sync endpoint URL.
@@ -176,7 +296,14 @@ export class SphereSyncClient {
    */
   static async saveConfig(updates: Partial<SyncConfig>): Promise<SyncConfig> {
     const current = await this.getConfig();
-    const merged: SyncConfig = { ...current, ...updates };
+    const rawMerged: SyncConfig = { ...current, ...updates };
+    const merged: SyncConfig = {
+      ...rawMerged,
+      endpointUrl: (rawMerged.endpointUrl || "").trim(),
+      apiKey: (rawMerged.apiKey || "").trim(),
+      pharmacyId: (rawMerged.pharmacyId || "DEFAULT_STORE").trim() || "DEFAULT_STORE",
+      expectedTenantUU: (rawMerged.expectedTenantUU || "").trim(),
+    };
 
     const toStore: Record<string, any> = {
       [STORAGE_KEYS.ENDPOINT_URL]: merged.endpointUrl,
@@ -282,7 +409,7 @@ export class SphereSyncClient {
         await SyncQueueManager.markSyncing(ids);
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
 
         try {
           const payloadItems = pendingItems.map(
@@ -294,11 +421,11 @@ export class SphereSyncClient {
             coalescedItems.find((i) => Boolean(i.tenantUU))?.tenantUU ||
             undefined;
 
-          const response = await fetch(config.endpointUrl, {
+          const response = await fetch(config.endpointUrl.trim(), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${config.apiKey}`,
+              Authorization: `Bearer ${config.apiKey.trim()}`,
               "X-Pharmacy-Source": "BANDAGO_POS",
             },
             signal: controller.signal,
@@ -319,14 +446,14 @@ export class SphereSyncClient {
             );
           }
 
-          let resData: any = null;
-          if (typeof response.json === "function") {
-            try {
-              resData = await response.json();
-            } catch {
-              // Ignore if response has no JSON body
-            }
+          const parsedBody = await parseSphereJsonResponse(
+            response,
+            config.endpointUrl,
+          );
+          if (!parsedBody.ok) {
+            throw new Error(parsedBody.error);
           }
+          const resData = parsedBody.data;
 
           if (resData && resData.policySummary) {
             await this.saveServerPolicy({
@@ -492,7 +619,9 @@ export class SphereSyncClient {
   static async testConnection(
     config: SyncConfig,
   ): Promise<{ ok: boolean; status?: number; error?: string }> {
-    if (!config.endpointUrl || !config.apiKey) {
+    const endpointUrl = (config.endpointUrl || "").trim();
+    const apiKey = (config.apiKey || "").trim();
+    if (!endpointUrl || !apiKey) {
       return { ok: false, error: "Endpoint URL and API Key are required" };
     }
 
@@ -500,17 +629,17 @@ export class SphereSyncClient {
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
-      const response = await fetch(config.endpointUrl, {
+      const response = await fetch(endpointUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
           "X-Pharmacy-Source": "BANDAGO_POS",
         },
         signal: controller.signal,
         body: JSON.stringify({
           source: "BANDAGO_POS",
-          pharmacyId: config.pharmacyId || "TEST_PING",
+          pharmacyId: (config.pharmacyId || "TEST_PING").trim(),
           timestamp: new Date().toISOString(),
           items: [],
         }),
@@ -533,28 +662,64 @@ export class SphereSyncClient {
         };
       }
 
+      const parsed = await parseSphereJsonResponse(response, endpointUrl);
+      if (!parsed.ok) {
+        return {
+          ok: false,
+          status: response.status,
+          error: parsed.error,
+        };
+      }
+
       if (typeof response.json === "function") {
-        try {
-          const pingData = await response.json();
-          if (pingData && pingData.policySummary) {
-            await this.saveServerPolicy({
-              outboundSyncMode: pingData.policySummary.outboundSyncMode,
-              inboundEnabled:
-                pingData.policySummary.inboundEnabled ??
-                (!pingData.paused && !pingData.skipped),
-              expectedTenantUU: pingData.policySummary.expectedTenantUU ?? null,
-            }).catch(() => {});
-          }
-          if (pingData && (pingData.paused || pingData.skipped)) {
-            return {
-              ok: true,
-              status: response.status,
-              error:
-                pingData.reason ||
-                "Connected (Inbound POS sync is currently paused by Sphere admin)",
-            };
-          }
-        } catch {}
+        const pingData = parsed.data;
+        const hasRecognizedKey =
+          "success" in pingData ||
+          "policySummary" in pingData ||
+          "upsertedCount" in pingData ||
+          "syncedCount" in pingData ||
+          "synced" in pingData ||
+          "count" in pingData ||
+          "paused" in pingData ||
+          "skipped" in pingData;
+        if (!hasRecognizedKey) {
+          return {
+            ok: false,
+            status: response.status,
+            error:
+              "Endpoint returned JSON, but not from the Sphere BandaGo Sync API. Verify URL ends with /api/integrations/bandago/sync.",
+          };
+        }
+
+        if (pingData.success === false) {
+          return {
+            ok: false,
+            status: response.status,
+            error:
+              typeof pingData.error === "string" && pingData.error
+                ? pingData.error
+                : "Sphere API rejected handshake",
+          };
+        }
+
+        if (pingData.policySummary) {
+          await this.saveServerPolicy({
+            outboundSyncMode: pingData.policySummary.outboundSyncMode,
+            inboundEnabled:
+              pingData.policySummary.inboundEnabled ??
+              (!pingData.paused && !pingData.skipped),
+            expectedTenantUU: pingData.policySummary.expectedTenantUU ?? null,
+          }).catch(() => {});
+        }
+        if (pingData.paused || pingData.skipped) {
+          return {
+            ok: true,
+            status: response.status,
+            error:
+              pingData.reason ||
+              "Connected (Inbound POS sync is currently paused by Sphere admin)",
+          };
+        }
       }
 
       return { ok: true, status: response.status };
@@ -936,7 +1101,7 @@ export class SphereSyncClient {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${config.apiKey.trim()}`,
         },
         body: JSON.stringify({
           heartbeat: {
@@ -952,6 +1117,13 @@ export class SphereSyncClient {
       });
 
       if (!res.ok) return { ok: false };
+      const ct =
+        (typeof res.headers?.get === "function"
+          ? res.headers.get("content-type")
+          : (res.headers as any)?.["content-type"]) || "";
+      if (ct && !ct.toLowerCase().includes("json")) {
+        return { ok: false };
+      }
       const json = await res.json().catch(() => ({}));
       if (json?.policy) {
         await this.saveServerPolicy(json.policy).catch(() => {});

@@ -428,7 +428,32 @@ export class BandaGoWritebackEngine {
         await saveStatus({ ok: false, message: msg, lastErrorCode: errCode });
         return { ok: false, synced: 0, released: 0, failed: 0, message: msg };
       }
-      claimResponse = await res.json();
+      const ct =
+        (typeof res.headers?.get === "function"
+          ? res.headers.get("content-type")
+          : (res.headers as any)?.["content-type"]) || "";
+      if (ct && !ct.toLowerCase().includes("json")) {
+        const msg = `Sphere outbound endpoint returned HTML/non-JSON (${ct.split(";")[0].trim()}) — check your Sphere Ingestion Endpoint URL spelling (expected .../api/integrations/bandago/sync)`;
+        await saveStatus({
+          ok: false,
+          message: msg,
+          lastErrorCode: "INVALID_ENDPOINT_URL",
+        });
+        return { ok: false, synced: 0, released: 0, failed: 0, message: msg };
+      }
+      try {
+        claimResponse = await res.json();
+      } catch (parseErr: unknown) {
+        const parseMsg =
+          parseErr instanceof Error ? parseErr.message : "Invalid JSON response";
+        const msg = `Sphere outbound endpoint returned non-JSON payload (${parseMsg}) — check your Sphere Ingestion Endpoint URL spelling (expected .../api/integrations/bandago/sync)`;
+        await saveStatus({
+          ok: false,
+          message: msg,
+          lastErrorCode: "INVALID_ENDPOINT_URL",
+        });
+        return { ok: false, synced: 0, released: 0, failed: 0, message: msg };
+      }
     } catch (err: unknown) {
       const msg =
         err instanceof Error
@@ -585,7 +610,9 @@ export class BandaGoWritebackEngine {
       const execResults = await chrome.scripting.executeScript({
         target: { tabId },
         func: inTabExecuteWritebackBatch,
-        args: [gqlEndpoint, jobs, expectedTenantUU, cachedAuthHeader],
+        args: discoveredGql?.usesBatchArray
+          ? [gqlEndpoint, jobs, expectedTenantUU, cachedAuthHeader, true]
+          : [gqlEndpoint, jobs, expectedTenantUU, cachedAuthHeader],
       });
       tabResults = Array.isArray(execResults?.[0]?.result?.results)
         ? execResults[0].result.results
@@ -695,6 +722,7 @@ async function inTabExecuteWritebackBatch(
   jobs: ClaimedOutboundJob[],
   expectedTenantUU: string | null,
   cachedAuthHeader: string | null,
+  preferBatchArray = false,
 ): Promise<{
   results: any[];
   fatalError?: { code: string; message: string };
@@ -817,7 +845,11 @@ async function inTabExecuteWritebackBatch(
   };
 
   const runGql = async (query: string, variables?: Record<string, any>) => {
-    const attempt = async (url: string, asBatch = false): Promise<any> => {
+    const attempt = async (
+      url: string,
+      asBatch = preferBatchArray,
+      allowBatchFlip = true,
+    ): Promise<any> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
@@ -834,8 +866,14 @@ async function inTabExecuteWritebackBatch(
             ? res.headers.get("content-type")
             : "") || "";
         if (!res.ok) {
-          if (!asBatch && (res.status === 400 || res.status === 500)) {
-            const batchRetry = await attempt(url, true);
+          if (
+            allowBatchFlip &&
+            (res.status === 400 ||
+              res.status === 415 ||
+              res.status === 422 ||
+              res.status === 500)
+          ) {
+            const batchRetry = await attempt(url, !asBatch, false);
             if (batchRetry.ok) return batchRetry;
           }
           const text = await res.text().catch(() => "");
@@ -845,7 +883,7 @@ async function inTabExecuteWritebackBatch(
             error: `HTTP ${res.status}: ${text.slice(0, 220)}`,
           };
         }
-        if (ct && !ct.includes("application/json")) {
+        if (ct && !ct.toLowerCase().includes("json")) {
           return {
             ok: false,
             status: res.status,

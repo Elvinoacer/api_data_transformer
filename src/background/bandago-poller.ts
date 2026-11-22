@@ -359,6 +359,30 @@ export class BandaGoActivePoller {
       }
     `;
 
+    const args: [
+      string,
+      string,
+      string | null,
+      string | null,
+      string | null,
+      boolean?,
+    ] = discoveredGql?.usesBatchArray
+      ? [
+          gqlEndpointArg,
+          storageOnHandQuery,
+          productListQuery,
+          fallbackInventoryQuery,
+          cachedAuthHeader,
+          true,
+        ]
+      : [
+          gqlEndpointArg,
+          storageOnHandQuery,
+          productListQuery,
+          fallbackInventoryQuery,
+          cachedAuthHeader,
+        ];
+
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId },
@@ -368,11 +392,13 @@ export class BandaGoActivePoller {
           param3?: string | null,
           param4?: string | null,
           param5?: string | null,
+          param6?: boolean,
         ) => {
           let cachedAuthHeader: string | null = null;
           let storageQuery = storageOrSingleQuery;
           let productQuery: string | null = null;
           let legacyQuery: string | null = null;
+          const defaultUseBatch = Boolean(param6);
 
           if (param5 !== undefined || param4 !== undefined) {
             productQuery = param3 ?? null;
@@ -472,7 +498,8 @@ export class BandaGoActivePoller {
               endpoint: string,
               queryStr: string,
               variables?: Record<string, any>,
-              asBatch = false,
+              asBatch = defaultUseBatch,
+              allowBatchFlip = true,
             ): Promise<any> => {
               const opMatch = queryStr.match(/(?:query|mutation)\s+([A-Za-z0-9_]+)/);
               const opName = opMatch ? opMatch[1] : undefined;
@@ -492,12 +519,19 @@ export class BandaGoActivePoller {
                   body: JSON.stringify(asBatch ? [bodyObj] : bodyObj),
                 });
                 if (!res.ok) {
-                  if (!asBatch && (res.status === 400 || res.status === 500)) {
+                  if (
+                    allowBatchFlip &&
+                    (res.status === 400 ||
+                      res.status === 415 ||
+                      res.status === 422 ||
+                      res.status === 500)
+                  ) {
                     const batchRetry = await executeGql(
                       endpoint,
                       queryStr,
                       variables,
-                      true,
+                      !asBatch,
+                      false,
                     );
                     if (!batchRetry?.error) return batchRetry;
                   }
@@ -511,7 +545,7 @@ export class BandaGoActivePoller {
                   (typeof res.headers?.get === "function"
                     ? res.headers.get("content-type")
                     : (res.headers as any)?.["content-type"]) || "";
-                if (contentType && !contentType.includes("application/json")) {
+                if (contentType && !contentType.toLowerCase().includes("json")) {
                   return {
                     error: `Non-JSON response (${contentType})`,
                     status: res.status,
@@ -520,6 +554,13 @@ export class BandaGoActivePoller {
                 }
                 try {
                   const parsed = await res.json();
+                  if (!parsed || typeof parsed !== "object") {
+                    return {
+                      error: "Empty or null JSON response from BandaGo",
+                      status: res.status,
+                      nonJson: true,
+                    };
+                  }
                   return Array.isArray(parsed)
                     ? parsed[0] || { error: "Empty batched GraphQL response" }
                     : parsed;
@@ -549,6 +590,19 @@ export class BandaGoActivePoller {
 
             // BandaGo iDempiere Inventory Polling (0-indexed pagination per idemp-plugins)
             const MAX_PAGES = 150;
+            const pollDeadline = Date.now() + 22000;
+            const compactRow = (val: unknown, depth = 0): any => {
+              if (depth > 6 || val == null || typeof val !== "object") return val;
+              if (Array.isArray(val)) {
+                return val.map((el) => compactRow(el, depth + 1));
+              }
+              const out: Record<string, any> = {};
+              for (const [key, v] of Object.entries(val as Record<string, any>)) {
+                if (key === "__typename" || v === undefined) continue;
+                out[key] = compactRow(v, depth + 1);
+              }
+              return out;
+            };
             const leanStorageQuery = `
               query M_StorageOnHandForInventoryList($Page: Int, $Size: Int, $Filter: String) {
                 M_StorageOnHandGet(Page: $Page, Size: $Size, Filter: $Filter) {
@@ -568,6 +622,26 @@ export class BandaGoActivePoller {
                       IsActive
                       IsStocked
                       M_Product_Category { UU Name }
+                    }
+                  }
+                }
+              }
+            `;
+            const minimalStorageNoFilterQuery = `
+              query M_StorageOnHandForInventoryList($Page: Int, $Size: Int) {
+                M_StorageOnHandGet(Page: $Page, Size: $Size) {
+                  PagingInfo { Page PageSize TotalCount TotalPages }
+                  Results {
+                    QtyOnHand
+                    UU
+                    M_AttributeSetInstance { UU GuaranteeDate Lot }
+                    M_Product {
+                      UU
+                      Name
+                      BH_SellPrice
+                      LastPurchasePrice
+                      TotalQuantity
+                      IsActive
                     }
                   }
                 }
@@ -656,11 +730,12 @@ export class BandaGoActivePoller {
               if (msg.includes(`Cannot query field ${rootField}`) || msg.includes(`Cannot query field '${rootField}'`)) {
                 return false;
               }
-              return /Cannot query field|Validation error|Unknown argument|Invalid argument/i.test(msg);
+              return /Cannot query field|Validation\s*error|FieldUndefined|is undefined|Unknown field|Unknown argument|Invalid argument|does not exist/i.test(msg);
             };
 
             let endpointToUse = gqlEndpoint;
             let activeStorageQuery = storageQuery;
+            let includeStorageFilterVar = true;
             let storageRes: any = await executeGql(endpointToUse, activeStorageQuery, {
               Page: 0,
               Size: 500,
@@ -697,7 +772,7 @@ export class BandaGoActivePoller {
               if (leanRes?.data?.M_StorageOnHandGet) {
                 activeStorageQuery = leanStorageQuery;
                 storageRes = leanRes;
-              } else if (isSubfieldValidationError(leanRes, "M_StorageOnHandGet")) {
+              } else {
                 const minRes = await executeGql(endpointToUse, minimalStorageQuery, {
                   Page: 0,
                   Size: 500,
@@ -706,6 +781,22 @@ export class BandaGoActivePoller {
                 if (minRes?.data?.M_StorageOnHandGet) {
                   activeStorageQuery = minimalStorageQuery;
                   storageRes = minRes;
+                } else if (
+                  isSubfieldValidationError(minRes, "M_StorageOnHandGet") ||
+                  minRes?.errors?.some((e: any) =>
+                    /Filter|Unknown argument|Invalid argument/i.test(String(e?.message || "")),
+                  )
+                ) {
+                  const noFilterStorageRes = await executeGql(
+                    endpointToUse,
+                    minimalStorageNoFilterQuery,
+                    { Page: 0, Size: 500 },
+                  );
+                  if (noFilterStorageRes?.data?.M_StorageOnHandGet) {
+                    activeStorageQuery = minimalStorageNoFilterQuery;
+                    includeStorageFilterVar = false;
+                    storageRes = noFilterStorageRes;
+                  }
                 }
               }
             }
@@ -726,11 +817,15 @@ export class BandaGoActivePoller {
                 ? [...storageRes.data.M_StorageOnHandGet.Results]
                 : [];
               for (let page = nextStart; page <= lastPage; page++) {
-                const nextPage = await executeGql(endpointToUse, activeStorageQuery, {
-                  Page: page,
-                  Size: 500,
-                  Filter: JSON.stringify({}),
-                });
+                if (Date.now() > pollDeadline) break;
+                const storageVars: Record<string, any> = includeStorageFilterVar
+                  ? { Page: page, Size: 500, Filter: JSON.stringify({}) }
+                  : { Page: page, Size: 500 };
+                const nextPage = await executeGql(
+                  endpointToUse,
+                  activeStorageQuery,
+                  storageVars,
+                );
                 const nextResults = nextPage?.data?.M_StorageOnHandGet?.Results;
                 if (Array.isArray(nextResults)) {
                   for (const row of nextResults) {
@@ -824,6 +919,7 @@ export class BandaGoActivePoller {
                   ? [...productRes.data.M_ProductGet.Results]
                   : [];
                 for (let page = nextStart; page <= lastPage; page++) {
+                  if (Date.now() > pollDeadline) break;
                   const vars: Record<string, any> = includeFilterVar
                     ? { Page: page, Size: 500, Filter: JSON.stringify({}) }
                     : { Page: page, Size: 500 };
@@ -846,6 +942,16 @@ export class BandaGoActivePoller {
             }
 
             if (storageRes?.data || productRes?.data) {
+              if (Array.isArray(storageRes?.data?.M_StorageOnHandGet?.Results)) {
+                storageRes.data.M_StorageOnHandGet.Results = compactRow(
+                  storageRes.data.M_StorageOnHandGet.Results,
+                );
+              }
+              if (Array.isArray(productRes?.data?.M_ProductGet?.Results)) {
+                productRes.data.M_ProductGet.Results = compactRow(
+                  productRes.data.M_ProductGet.Results,
+                );
+              }
               return {
                 data: {
                   ...(storageRes?.data || {}),
@@ -873,32 +979,130 @@ export class BandaGoActivePoller {
               if (primaryIdempiereError) {
                 return primaryIdempiereError;
               }
-              return legRes;
+              return legRes || { error: "BandaGo GraphQL returned an empty response" };
             }
 
-            return primaryIdempiereError || storageRes || productRes;
+            return (
+              primaryIdempiereError ||
+              storageRes ||
+              productRes || { error: "BandaGo GraphQL returned an empty response" }
+            );
           } catch (e: any) {
             return {
               error: e.message || "Fetch failed",
             };
           }
         },
-        args: [
-          gqlEndpointArg,
-          storageOnHandQuery,
-          productListQuery,
-          fallbackInventoryQuery,
-          cachedAuthHeader,
-        ],
+        args,
       });
 
-      const response = results[0]?.result;
+      let response = results?.[0]?.result;
       if (!response) {
-        return finishPoll({
-          success: false,
-          count: 0,
-          message: "No response returned from BandaGo tab",
-        });
+        try {
+          const mainWorldResults = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: "MAIN",
+            func: async (
+              gqlEndpoint: string,
+              storageOrSingleQuery: string,
+              param3?: string | null,
+              param4?: string | null,
+              param5?: string | null,
+              param6?: boolean,
+            ) => {
+              // Reuse same self-contained poller inside MAIN world when ISOLATED world returns empty
+              let cachedAuthHeader: string | null = param5 ?? null;
+              let productQuery = param3 ?? null;
+              let legacyQuery = param4 ?? null;
+              if (param5 === undefined && param4 === undefined) {
+                cachedAuthHeader = param3 ?? null;
+                productQuery = null;
+                legacyQuery = null;
+              }
+              void legacyQuery;
+              try {
+                if (!cachedAuthHeader) {
+                  const jwtRegex = /^eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/;
+                  const scan = (val: unknown, depth = 0): string | null => {
+                    if (depth > 3 || val == null) return null;
+                    if (typeof val === "string") {
+                      const c = val.trim().replace(/^"|"$/g, "").replace(/^Bearer\s+/i, "").trim();
+                      if (jwtRegex.test(c)) return c;
+                      if (c.startsWith("{") || c.startsWith("[")) {
+                        try { return scan(JSON.parse(c), depth + 1); } catch {}
+                      }
+                      return null;
+                    }
+                    if (typeof val === "object") {
+                      for (const v of Object.values(val as Record<string, unknown>)) {
+                        const hit = scan(v, depth + 1);
+                        if (hit) return hit;
+                      }
+                    }
+                    return null;
+                  };
+                  for (const store of [window.localStorage, window.sessionStorage]) {
+                    if (!store) continue;
+                    for (let i = 0; i < store.length; i++) {
+                      const k = store.key(i);
+                      const v = k ? store.getItem(k) : null;
+                      const tok = v ? scan(v) : null;
+                      if (tok) { cachedAuthHeader = `Bearer ${tok}`; break; }
+                    }
+                    if (cachedAuthHeader) break;
+                  }
+                }
+                const headers: Record<string, string> = {
+                  "Content-Type": "application/json",
+                  Accept: "application/json",
+                };
+                if (cachedAuthHeader) {
+                  headers.Authorization = cachedAuthHeader.toLowerCase().startsWith("bearer ")
+                    ? cachedAuthHeader
+                    : `Bearer ${cachedAuthHeader}`;
+                }
+                const run = async (query: string, vars?: Record<string, any>) => {
+                  const opMatch = query.match(/(?:query|mutation)\s+([A-Za-z0-9_]+)/);
+                  const body = { query, ...(opMatch ? { operationName: opMatch[1] } : {}), ...(vars ? { variables: vars } : {}) };
+                  const res = await fetch(gqlEndpoint, {
+                    method: "POST",
+                    credentials: "include",
+                    headers,
+                    body: JSON.stringify(param6 ? [body] : body),
+                  });
+                  if (!res.ok) return { error: `HTTP ${res.status}`, status: res.status };
+                  const ct = res.headers?.get("content-type") || "";
+                  if (ct && !ct.toLowerCase().includes("json")) return { error: `Non-JSON (${ct})`, status: res.status };
+                  const json = await res.json();
+                  return Array.isArray(json) ? json[0] || { error: "Empty response" } : json;
+                };
+                const sRes = await run(storageOrSingleQuery, { Page: 0, Size: 200, Filter: JSON.stringify({}) });
+                const pRes = productQuery ? await run(productQuery, { Page: 0, Size: 200, Filter: JSON.stringify({}) }) : null;
+                if (sRes?.data || pRes?.data) {
+                  return { data: { ...(sRes?.data || {}), ...(pRes?.data || {}) } };
+                }
+                return pRes || sRes || { error: "MAIN world GraphQL returned no data" };
+              } catch (err: any) {
+                return { error: err?.message || "MAIN world fetch failed" };
+              }
+            },
+            args,
+          });
+          response = mainWorldResults?.[0]?.result;
+        } catch {
+          // Ignore MAIN world injection errors
+        }
+      }
+
+      if (!response) {
+        return finishPoll(
+          {
+            success: false,
+            count: 0,
+            message: `No response returned from BandaGo tab (tab #${tabId}, status=${bestTab.status || "unknown"}, endpoint=${gqlEndpointArg}) — refresh the BandaGo tab and ensure you are signed in`,
+          },
+          "NETWORK_TIMEOUT",
+        );
       }
 
       if (response.error) {

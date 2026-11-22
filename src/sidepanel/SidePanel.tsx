@@ -274,11 +274,30 @@ const SidePanelWorkspace: React.FC = () => {
   const handleQuickSphereSync = async () => {
     setIsSyncingNow(true);
     try {
+      const hasRuntime =
+        typeof chrome !== "undefined" &&
+        typeof chrome.runtime?.sendMessage === "function";
+
       if (sphereQueue.failed > 0) {
-        await SphereSyncClient.retryFailed();
+        if (hasRuntime) {
+          await sendExtensionMessage("SPHERE_RETRY_FAILED");
+        } else {
+          await SphereSyncClient.retryFailed();
+        }
       }
       await sendExtensionMessage("BANDAGO_TRIGGER_POLL");
-      const res = await SphereSyncClient.flushQueue();
+      let res: { synced: number; failed: number; error?: string };
+      if (hasRuntime) {
+        const flushMsg = await sendExtensionMessage<
+          undefined,
+          { synced: number; failed: number; error?: string }
+        >("SPHERE_FLUSH_QUEUE");
+        res = flushMsg.success && flushMsg.data
+          ? flushMsg.data
+          : { synced: 0, failed: 0, error: flushMsg.error };
+      } else {
+        res = await SphereSyncClient.flushQueue();
+      }
       await refresh();
       if (res.error) {
         notify({

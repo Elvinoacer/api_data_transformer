@@ -21,6 +21,17 @@ import { BandaGoActivePoller } from "../../src/background/bandago-poller";
 import { BandaGoWritebackEngine } from "../../src/background/bandago-writeback";
 import { SphereSyncClient } from "../../src/sync/sphere-client";
 import { SyncQueueManager } from "../../src/sync/sync-queue";
+import { captureController } from "../../src/background/capture-controller";
+import {
+  cdpAdapter,
+  CdpNetworkAdapter,
+} from "../../src/background/cdp-adapter";
+import { db } from "../../src/data/db";
+import {
+  rawResponseRepo,
+  recordRepo,
+  sourceRepo,
+} from "../../src/data/repositories";
 
 const LIVE_PRODUCTS_15 = [
   {
@@ -857,5 +868,550 @@ describe("Live Banda Health (go.bandahealth.org) End-to-End Capture & Sync", () 
     expect(markSuccessSpy).not.toHaveBeenCalled();
     expect(res.synced).toBe(0);
     expect(res.error).toContain("paused");
+  });
+
+  describe("Live Capture Reliability & Anti-Race Hardening", () => {
+    function createMockTable<T extends Record<string, any>>() {
+      let items: T[] = [];
+      const rowKey = (item: any) => item?.id ?? item?.sourceId;
+      return {
+        put: vi.fn(async (item: T) => {
+          const k = rowKey(item);
+          const idx = items.findIndex((i) => k !== undefined && rowKey(i) === k);
+          if (idx >= 0) items[idx] = { ...items[idx], ...item };
+          else items.push({ ...item });
+          return k;
+        }),
+        bulkPut: vi.fn(async (newItems: T[]) => {
+          for (const item of newItems) {
+            const k = rowKey(item);
+            const idx = items.findIndex((i) => k !== undefined && rowKey(i) === k);
+            if (idx >= 0) items[idx] = { ...items[idx], ...item };
+            else items.push({ ...item });
+          }
+        }),
+        add: vi.fn(async (item: T) => {
+          const copy = { ...item, id: item.id ?? items.length + 1 } as T;
+          items.push(copy);
+          return copy.id;
+        }),
+        get: vi.fn(async (keyVal: any) => items.find((i) => rowKey(i) === keyVal)),
+        update: vi.fn(async (keyVal: any, changes: Partial<T>) => {
+          const item = items.find((i) => rowKey(i) === keyVal);
+          if (item) Object.assign(item, changes);
+        }),
+        delete: vi.fn(async (keyVal: any) => {
+          items = items.filter((i) => rowKey(i) !== keyVal);
+        }),
+        clear: vi.fn(async () => {
+          items = [];
+        }),
+        count: vi.fn(async () => items.length),
+        toArray: vi.fn(async () => [...items]),
+        orderBy: vi.fn(() => ({
+          reverse: () => ({ toArray: async () => [...items] }),
+        })),
+        where: vi.fn((field: string) => ({
+          equals: (val: any) => ({
+            first: vi.fn(async () => items.find((i) => i[field] === val)),
+            delete: vi.fn(async () => {
+              const before = items.length;
+              items = items.filter((i) => i[field] !== val);
+              return before - items.length;
+            }),
+            toArray: vi.fn(async () => items.filter((i) => i[field] === val)),
+            count: vi.fn(async () => items.filter((i) => i[field] === val).length),
+            limit: (n: number) => ({
+              toArray: async () => items.filter((i) => i[field] === val).slice(0, n),
+            }),
+            filter: (pred: (item: T) => boolean) => ({
+              toArray: async () =>
+                items.filter((i) => i[field] === val && pred(i)),
+            }),
+          }),
+          anyOf: (vals: any[]) => ({
+            first: vi.fn(async () => items.find((i) => vals.includes(i[field]))),
+            toArray: vi.fn(async () =>
+              items.filter((i) => vals.includes(i[field])),
+            ),
+            modify: vi.fn(async (patch: Partial<T>) => {
+              for (const item of items) {
+                if (vals.includes(item[field])) Object.assign(item, patch);
+              }
+            }),
+          }),
+        })),
+      };
+    }
+
+    const origChrome = (globalThis as any).chrome;
+    const origFetch = global.fetch;
+    const origDbProps: Record<string, any> = {};
+
+    beforeEach(() => {
+      captureController.resetForTesting();
+      (CdpNetworkAdapter as any).inMemoryGqlEndpoints?.clear();
+      (CdpNetworkAdapter as any).inMemoryAuthHeaders?.clear();
+
+      for (const table of [
+        "capture_sessions",
+        "raw_responses",
+        "extracted_records",
+        "sources",
+        "schemas",
+        "capture_errors",
+        "activity_events",
+        "sync_queue",
+        "transaction",
+      ]) {
+        origDbProps[table] = (db as any)[table];
+      }
+
+      (db as any).capture_sessions = createMockTable();
+      (db as any).raw_responses = createMockTable();
+      (db as any).extracted_records = createMockTable();
+      (db as any).sources = createMockTable();
+      (db as any).schemas = createMockTable();
+      (db as any).capture_errors = createMockTable();
+      (db as any).activity_events = createMockTable();
+      (db as any).sync_queue = createMockTable();
+      (db as any).transaction = async (_mode: any, _tables: any, cb: () => Promise<any>) =>
+        await cb();
+
+      const localStore: Record<string, any> = {};
+      (globalThis as any).chrome = {
+        storage: {
+          local: {
+            get: vi.fn(async (keys?: string | string[]) => {
+              if (!keys) return { ...localStore };
+              const arr = Array.isArray(keys) ? keys : [keys];
+              const res: Record<string, any> = {};
+              for (const k of arr) {
+                if (k in localStore) res[k] = localStore[k];
+              }
+              return res;
+            }),
+            set: vi.fn(async (items: Record<string, any>) => {
+              Object.assign(localStore, items);
+            }),
+          },
+          session: {
+            store: {} as Record<string, any>,
+            get: vi.fn(async () => ({})),
+            set: vi.fn(async () => {}),
+          },
+          onChanged: { addListener: vi.fn() },
+        },
+        action: {
+          setBadgeText: vi.fn().mockResolvedValue(undefined),
+          setBadgeBackgroundColor: vi.fn().mockResolvedValue(undefined),
+        },
+        debugger: {
+          attach: vi.fn().mockResolvedValue(undefined),
+          detach: vi.fn().mockResolvedValue(undefined),
+          sendCommand: vi.fn().mockResolvedValue(undefined),
+          getTargets: vi.fn().mockResolvedValue([
+            { id: "t-101", tabId: 101, attached: true, type: "page" },
+          ]),
+        },
+        tabs: {
+          query: vi.fn().mockResolvedValue([]),
+        },
+        scripting: {
+          executeScript: vi.fn().mockResolvedValue([]),
+        },
+      };
+    });
+
+    afterEach(() => {
+      captureController.resetForTesting();
+      (globalThis as any).chrome = origChrome;
+      global.fetch = origFetch;
+      for (const [k, v] of Object.entries(origDbProps)) {
+        (db as any)[k] = v;
+      }
+    });
+
+    it("captures fast fire-and-forget CDP events without dropping responses while chrome.storage lags", async () => {
+      // Simulate slow chrome.storage.local IPC (15ms) like real SW cold wakeup
+      (chrome.storage.local.get as any).mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 15));
+        return {};
+      });
+
+      vi.spyOn(cdpAdapter, "attach").mockResolvedValue(undefined);
+      vi.spyOn(cdpAdapter, "enableNetwork").mockResolvedValue(undefined);
+      vi.spyOn(cdpAdapter, "detach").mockResolvedValue(undefined);
+      vi.spyOn(cdpAdapter, "getResponseBody").mockImplementation(
+        async (_tabId, reqId) => {
+          if (reqId === "req-prod-1") {
+            return JSON.stringify([
+              {
+                data: {
+                  M_ProductGet: {
+                    PagingInfo: {
+                      Page: 0,
+                      PageSize: 15,
+                      TotalCount: 1349,
+                      TotalPages: 90,
+                    },
+                    Results: LIVE_PRODUCTS_15,
+                  },
+                },
+              },
+            ]);
+          }
+          if (reqId === "req-loc-2") {
+            return JSON.stringify({
+              data: { C_LocationGet: { Results: [{ UU: "loc-1", Name: "Nairobi" }] } },
+            });
+          }
+          return JSON.stringify([
+            { data: { BH_HIE_OrgGet: { Results: [], __typename: "BH_HIE_OrgConnection" } } },
+          ]);
+        },
+      );
+
+      const session = await captureController.startCapture({
+        tabId: 101,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+      });
+
+      const enqueueSpy = vi
+        .spyOn(SphereSyncClient, "enqueue")
+        .mockResolvedValue(15);
+
+      const postBatch = JSON.stringify([
+        {
+          operationName: "M_ProductForProductListPage",
+          variables: { Page: 0, Size: 15 },
+          query: "query M_ProductForProductListPage { M_ProductGet { Results { UU } } }",
+        },
+      ]);
+
+      // Dispatch all 3 concurrent GraphQL requests synchronously back-to-back without awaiting between events
+      const promises: Promise<void>[] = [];
+      for (const [reqId, postData] of [
+        ["req-prod-1", postBatch],
+        ["req-loc-2", JSON.stringify({ operationName: "C_LocationGet" })],
+        ["req-hie-3", JSON.stringify([{ operationName: "BH_HIE_OrgGet" }])],
+      ] as const) {
+        promises.push(
+          captureController.onCdpEvent({ tabId: 101 }, "Network.requestWillBeSent", {
+            requestId: reqId,
+            request: {
+              url: "https://go.bandahealth.org/graphql/",
+              method: "POST",
+              postData,
+            },
+          }),
+        );
+        promises.push(
+          captureController.onCdpEvent({ tabId: 101 }, "Network.responseReceived", {
+            requestId: reqId,
+            type: "Fetch",
+            response: {
+              url: "https://go.bandahealth.org/graphql/",
+              status: 200,
+              mimeType: "application/graphql-response+json",
+            },
+          }),
+        );
+        promises.push(
+          captureController.onCdpEvent({ tabId: 101 }, "Network.loadingFinished", {
+            requestId: reqId,
+          }),
+        );
+      }
+
+      await Promise.all(promises);
+
+      const rawList = await rawResponseRepo.getAllBySession(session.id);
+      const sourcesList = await sourceRepo.getSourcesBySession(session.id);
+      const recordsList = await recordRepo.getAllRecordsBySession(session.id);
+
+      expect(rawList).toHaveLength(3);
+      expect(recordsList).toHaveLength(16);
+      const prodSource = sourcesList.find((s) => s.label === "BandaGo Products");
+      expect(prodSource).toBeDefined();
+      const prodRecords = await recordRepo.getRecordsBySource(
+        session.id,
+        prodSource!.id,
+      );
+      expect(prodRecords).toHaveLength(15);
+      expect(prodSource?.pagination?.totalRecords).toBe(1349);
+      expect(prodSource?.pagination?.totalPages).toBe(90);
+      expect(prodSource?.pagination?.observedPages).toEqual([1]);
+      expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("auto-detaches stale recording sessions on init() and allows clean restart on Start Capture", async () => {
+      await db.capture_sessions.put({
+        id: "stale-session-77",
+        label: "go.bandahealth.org capture",
+        targetTabId: 77,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+        status: "recording",
+        startedAt: new Date(Date.now() - 60000).toISOString(),
+      });
+
+      (chrome.debugger.getTargets as any).mockResolvedValue([
+        { id: "t-77", tabId: 77, attached: false, type: "page" },
+      ]);
+
+      await captureController.init();
+      expect(captureController.getStatus()).toBe("detached");
+
+      const persisted = await db.capture_sessions.get("stale-session-77");
+      expect(persisted?.status).toBe("detached");
+
+      // Simulate an in-memory stuck "recording" session whose tab debugger later detached
+      (captureController as any).currentSession = {
+        id: "stuck-mem-77",
+        label: "Stuck",
+        targetTabId: 77,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+        status: "recording",
+        startedAt: new Date().toISOString(),
+      };
+      (captureController as any).activeTabId = 77;
+
+      const fresh = await captureController.startCapture({
+        tabId: 77,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+      });
+      expect(fresh.status).toBe("recording");
+      expect(fresh.id).not.toBe("stuck-mem-77");
+    });
+
+    it("ingests passive BandaGo catalog updates into active capture session with deduplication", async () => {
+      const session = await captureController.startCapture({
+        tabId: 88,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+      });
+
+      const payload = {
+        data: {
+          M_ProductGet: {
+            PagingInfo: { Page: 0, PageSize: 15, TotalCount: 1349, TotalPages: 90 },
+            Results: LIVE_PRODUCTS_15,
+          },
+        },
+      };
+
+      const first = await captureController.ingestPassiveBandaGoCatalog({
+        tabId: 88,
+        endpointUrl: "https://go.bandahealth.org/graphql/",
+        operationName: "M_ProductForProductListPage",
+        payload,
+      });
+      expect(first).toEqual({ captured: true, extractedCount: 15 });
+
+      const second = await captureController.ingestPassiveBandaGoCatalog({
+        tabId: 88,
+        endpointUrl: "https://go.bandahealth.org/graphql/",
+        operationName: "M_ProductForProductListPage",
+        payload,
+      });
+      expect(second).toEqual({ captured: false, extractedCount: 0 });
+
+      const storedResponses = await rawResponseRepo.getAllBySession(session.id);
+      const storedRecords = await recordRepo.getAllRecordsBySession(session.id);
+      expect(storedResponses).toHaveLength(1);
+      expect(storedRecords).toHaveLength(15);
+    });
+
+    it("records cross-origin cookie-only GraphQL endpoints under session origin and accepts application/graphql-response+json in poller", async () => {
+      await captureController.startCapture({
+        tabId: 55,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+      });
+
+      await captureController.onCdpEvent({ tabId: 55 }, "Network.requestWillBeSent", {
+        requestId: "req-xorigin-1",
+        request: {
+          url: "https://api.bandahealth.org/graphql/",
+          method: "POST",
+          postData: JSON.stringify([{ operationName: "M_ProductForProductListPage" }]),
+          headers: {}, // Cookie-only session, no Authorization header
+        },
+      });
+      // Give fire-and-forget chrome.storage.local.set microtasks a tick
+      await new Promise((r) => setTimeout(r, 10));
+
+      const discoveredForTabOrigin = await CdpNetworkAdapter.getGraphqlEndpoint(
+        "https://go.bandahealth.org",
+      );
+      const discoveredForApiOrigin = await CdpNetworkAdapter.getGraphqlEndpoint(
+        "https://api.bandahealth.org",
+      );
+      expect(discoveredForTabOrigin).toEqual({
+        endpointUrl: "https://api.bandahealth.org/graphql/",
+        usesBatchArray: true,
+      });
+      expect(discoveredForApiOrigin).toEqual(discoveredForTabOrigin);
+
+      // Verify in-tab poller accepts application/graphql-response+json
+      vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+        endpointUrl: "https://sphere.example/api/integrations/bandago/sync",
+        apiKey: "valid-key",
+        enabled: true,
+      });
+      (chrome.tabs.query as any).mockResolvedValue([
+        { id: 55, url: "https://go.bandahealth.org/products" },
+      ]);
+      let passedFunc: any = null;
+      let passedArgs: any[] = [];
+      (chrome.scripting.executeScript as any).mockImplementation(async (opts: any) => {
+        passedFunc = opts.func;
+        passedArgs = opts.args;
+        return [{ result: { data: {} } }];
+      });
+
+      await BandaGoActivePoller.pollActiveTabs();
+      expect(passedArgs[0]).toBe("https://api.bandahealth.org/graphql/");
+      expect(passedArgs[5]).toBe(true);
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: {
+          get: (k: string) =>
+            k.toLowerCase() === "content-type"
+              ? "application/graphql-response+json; charset=utf-8"
+              : null,
+        },
+        json: async () => [{ data: { M_ProductGet: { Results: LIVE_PRODUCTS_15.slice(0, 2) } } }],
+      } as any);
+
+      const pollExecRes = await passedFunc(
+        passedArgs[0],
+        passedArgs[1],
+        passedArgs[2],
+        passedArgs[3],
+        passedArgs[4],
+        passedArgs[5],
+      );
+      expect(pollExecRes.data.M_ProductGet.Results).toHaveLength(2);
+    });
+
+    it("accepts empty resourceType on GraphQL endpoints and skips OPTIONS preflight requests", async () => {
+      expect(
+        checkResponseEligibility({
+          url: "https://go.bandahealth.org/graphql/",
+          allowedHostnames: ["go.bandahealth.org"],
+          scopeMode: "selected_hosts",
+          mimeType: "",
+          resourceType: "",
+        }).isEligible,
+      ).toBe(true);
+
+      expect(
+        checkResponseEligibility({
+          url: "https://go.bandahealth.org/graphql/",
+          allowedHostnames: ["go.bandahealth.org"],
+          scopeMode: "selected_hosts",
+          mimeType: "text/plain",
+          resourceType: "Other",
+        }).isEligible,
+      ).toBe(true);
+
+      const session = await captureController.startCapture({
+        tabId: 101,
+        originalUrl: "https://go.bandahealth.org/products",
+        allowedHostnames: ["go.bandahealth.org"],
+        scopeMode: "all_tab_apis",
+      });
+      const bodySpy = vi.spyOn(cdpAdapter, "getResponseBody");
+
+      await Promise.all([
+        captureController.onCdpEvent({ tabId: 101 }, "Network.requestWillBeSent", {
+          requestId: "opt-1",
+          request: { url: "https://api.bandahealth.org/graphql/", method: "OPTIONS" },
+        }),
+        captureController.onCdpEvent({ tabId: 101 }, "Network.responseReceived", {
+          requestId: "opt-1",
+          type: "Preflight",
+          response: { url: "https://api.bandahealth.org/graphql/", status: 204, mimeType: "" },
+        }),
+        captureController.onCdpEvent({ tabId: 101 }, "Network.loadingFinished", {
+          requestId: "opt-1",
+        }),
+      ]);
+
+      expect(bodySpy).not.toHaveBeenCalled();
+      expect(await rawResponseRepo.getAllBySession(session.id)).toHaveLength(0);
+    });
+
+    it("retries BandaGo poller in MAIN world when ISOLATED world returns empty result and classifies HTML outbound as INVALID_ENDPOINT_URL", async () => {
+      vi.spyOn(SphereSyncClient, "getConfig").mockResolvedValue({
+        endpointUrl: "https://sphere-pharmacy.vercel.app/api/integrations/bandago/sync",
+        apiKey: "valid-key",
+        enabled: true,
+        allowOutboundWriteback: true,
+      });
+      (chrome.tabs.query as any).mockResolvedValue([
+        { id: 91, url: "https://go.bandahealth.org/products", status: "complete" },
+      ]);
+      const enqueueSpy = vi.spyOn(SphereSyncClient, "enqueue").mockResolvedValue(2);
+
+      // 1. First executeScript call returns undefined result; MAIN-world retry succeeds
+      (chrome.scripting.executeScript as any)
+        .mockResolvedValueOnce([{ result: undefined }])
+        .mockResolvedValueOnce([
+          {
+            result: {
+              data: {
+                M_ProductGet: { Results: LIVE_PRODUCTS_15.slice(0, 2) },
+              },
+            },
+          },
+        ]);
+
+      const pollOk = await BandaGoActivePoller.pollActiveTabs();
+      expect(chrome.scripting.executeScript).toHaveBeenCalledTimes(2);
+      expect((chrome.scripting.executeScript as any).mock.calls[1][0].world).toBe("MAIN");
+      expect(pollOk.success).toBe(true);
+      expect(pollOk.count).toBe(2);
+      expect(enqueueSpy).toHaveBeenCalledTimes(1);
+
+      // 2. When both ISOLATED and MAIN return empty, surface rich diagnostic message
+      (chrome.scripting.executeScript as any).mockResolvedValue([{ result: undefined }]);
+      const pollFail = await BandaGoActivePoller.pollActiveTabs();
+      expect(pollFail.success).toBe(false);
+      expect(pollFail.message).toContain("tab #91");
+      expect(pollFail.message).toContain("refresh the BandaGo tab");
+
+      // 3. Outbound writeback classifies HTTP 200 HTML as INVALID_ENDPOINT_URL (not NETWORK_TIMEOUT)
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: {
+          get: (k: string) =>
+            k.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+        },
+        json: async () => {
+          throw new SyntaxError("Unexpected token '<'");
+        },
+      } as any);
+
+      const wbRes = await BandaGoWritebackEngine.syncOutboundNow({ trigger: "MANUAL" });
+      expect(wbRes.ok).toBe(false);
+      expect(wbRes.message).toContain("HTML/non-JSON");
+      const outStatus = await SphereSyncClient.getOutboundStatus();
+      expect(outStatus.lastErrorCode).toBe("INVALID_ENDPOINT_URL");
+    });
   });
 });

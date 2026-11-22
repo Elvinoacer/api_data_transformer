@@ -35,9 +35,11 @@ import {
   AutoPaginateState,
   CaptureSession,
   CaptureStatus,
+  GlobalSettings,
   RawResponse,
   ScopeMode,
 } from "../shared/types";
+import { DEFAULT_SETTINGS } from "../shared/constants";
 import { BandaGoNormalizer } from "../extraction/bandago-normalizer";
 import { SphereSyncClient } from "../sync/sphere-client";
 import { BandaGoActivePoller } from "./bandago-poller";
@@ -81,6 +83,12 @@ class CaptureController {
   private initPromise: Promise<void> | null = null;
   private isStartingOrStopping = false;
 
+  private cachedSettings: GlobalSettings = { ...DEFAULT_SETTINGS };
+  private settingsListenerRegistered = false;
+  private requestChains = new Map<string, Promise<void>>();
+  private extractionChains = new Map<string, Promise<void>>();
+  private recentCapturedHashes = new Map<string, number>();
+
   private autoPaginateState: AutoPaginateState = {
     ...DEFAULT_AUTO_PAGINATE_STATE,
   };
@@ -103,16 +111,126 @@ class CaptureController {
   }
 
   /**
-   * Recovers active session state from IndexedDB on service worker spin-up.
+   * Resets in-memory controller state (used by unit tests for clean session simulation).
+   */
+  public resetForTesting(): void {
+    this.activeTabId = null;
+    this.currentSession = null;
+    this.trackedRequests.clear();
+    this.pendingRequests.clear();
+    this.initPromise = null;
+    this.isStartingOrStopping = false;
+    this.cachedSettings = { ...DEFAULT_SETTINGS };
+    this.requestChains.clear();
+    this.extractionChains.clear();
+    this.recentCapturedHashes.clear();
+    this.lastClearedAtBySession.clear();
+    this.loggedNonBandaEndpoints.clear();
+    this.globalClearedAt = 0;
+    this.autoPaginateState = { ...DEFAULT_AUTO_PAGINATE_STATE };
+  }
+
+  private getSessionOrigin(): string | null {
+    if (!this.currentSession?.originalUrl) return null;
+    try {
+      const parsed = new URL(this.currentSession.originalUrl);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return parsed.origin;
+      }
+    } catch {}
+    return null;
+  }
+
+  private async refreshCachedSettings(): Promise<GlobalSettings> {
+    if (
+      !this.settingsListenerRegistered &&
+      typeof chrome !== "undefined" &&
+      chrome.storage?.onChanged?.addListener
+    ) {
+      this.settingsListenerRegistered = true;
+      chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName === "local" && changes.lndc_global_settings_v1?.newValue) {
+          this.cachedSettings = {
+            ...DEFAULT_SETTINGS,
+            ...changes.lndc_global_settings_v1.newValue,
+          };
+        }
+      });
+    }
+    try {
+      this.cachedSettings = await settingsRepo.getSettings();
+    } catch {
+      this.cachedSettings = { ...DEFAULT_SETTINGS };
+    }
+    return this.cachedSettings;
+  }
+
+  private async isDebuggerAttachedToTab(
+    tabId: number,
+  ): Promise<boolean | null> {
+    try {
+      if (
+        typeof chrome === "undefined" ||
+        typeof chrome.debugger?.getTargets !== "function"
+      ) {
+        return null;
+      }
+      const targets = await new Promise<chrome.debugger.TargetInfo[]>(
+        (resolve, reject) => {
+          try {
+            const maybePromise = (
+              chrome.debugger.getTargets as unknown as (
+                cb?: (res: chrome.debugger.TargetInfo[]) => void,
+              ) => Promise<chrome.debugger.TargetInfo[]> | undefined
+            )((res) => resolve(Array.isArray(res) ? res : []));
+            if (
+              maybePromise &&
+              typeof (maybePromise as Promise<unknown>).then === "function"
+            ) {
+              maybePromise
+                .then((res) => resolve(Array.isArray(res) ? res : []))
+                .catch(reject);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        },
+      );
+      return targets.some((t) => t.tabId === tabId && Boolean(t.attached));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Recovers active session state from IndexedDB on service worker spin-up,
+   * automatically marking stale sessions detached if Chrome debugger is no longer attached.
    */
   public async init(): Promise<void> {
     if (!this.initPromise) {
       this.initPromise = (async () => {
+        await this.refreshCachedSettings();
         const session = await sessionRepo.getActiveSession();
         if (session) {
-          this.currentSession = session;
-          this.activeTabId = session.targetTabId;
-          await this.syncBadge(session.status);
+          const attached = session.targetTabId
+            ? await this.isDebuggerAttachedToTab(session.targetTabId)
+            : false;
+          if (attached === false) {
+            const detachReason =
+              "Debugger detached after extension reload — click Start Capture to re-attach";
+            await sessionRepo
+              .updateStatus(session.id, "detached", detachReason)
+              .catch(() => {});
+            session.status = "detached";
+            session.errorReason = detachReason;
+            this.currentSession = session;
+            this.activeTabId = null;
+            await this.syncBadge("detached");
+          } else {
+            this.currentSession = session;
+            this.activeTabId = session.targetTabId;
+            await this.syncBadge(session.status);
+          }
         } else {
           await this.syncBadge("idle");
         }
@@ -158,14 +276,30 @@ class CaptureController {
       (this.currentSession.status === "recording" ||
         this.currentSession.status === "starting")
     ) {
-      throw new Error(
-        "A capture session is already recording. Stop it before starting a new one.",
-      );
+      const attached = this.activeTabId
+        ? await this.isDebuggerAttachedToTab(this.activeTabId)
+        : false;
+      if (attached === false) {
+        const staleReason =
+          "Debugger detached from previous session — starting new capture";
+        await sessionRepo
+          .updateStatus(this.currentSession.id, "detached", staleReason)
+          .catch(() => {});
+        this.currentSession.status = "detached";
+        this.activeTabId = null;
+        this.trackedRequests.clear();
+        this.pendingRequests.clear();
+        this.recentCapturedHashes.clear();
+      } else {
+        throw new Error(
+          "A capture session is already recording. Stop it before starting a new one.",
+        );
+      }
     }
 
     this.isStartingOrStopping = true;
     try {
-      const settings = await settingsRepo.getSettings();
+      const settings = await this.refreshCachedSettings();
       const session = await sessionRepo.createSession({
         targetTabId: params.tabId,
         originalUrl: params.originalUrl,
@@ -179,14 +313,37 @@ class CaptureController {
       this.activeTabId = params.tabId;
       this.trackedRequests.clear();
       this.pendingRequests.clear();
+      this.recentCapturedHashes.clear();
       this.autoPaginateState = { ...DEFAULT_AUTO_PAGINATE_STATE };
 
       try {
         await cdpAdapter.attach(params.tabId);
         await cdpAdapter.enableNetwork(params.tabId);
-        await sessionRepo.updateStatus(session.id, "recording");
         session.status = "recording";
+        await sessionRepo.updateStatus(session.id, "recording");
         await this.syncBadge("recording");
+
+        // Best-effort passive bridge injection so already-open BandaGo tabs capture seamlessly without reload
+        if (
+          typeof chrome !== "undefined" &&
+          chrome.scripting?.executeScript &&
+          /bandahealth\.org/i.test(params.originalUrl || "")
+        ) {
+          Promise.resolve(
+            chrome.scripting.executeScript({
+              target: { tabId: params.tabId },
+              files: ["isolated-bridge.js"],
+              world: "ISOLATED",
+            }),
+          ).catch(() => {});
+          Promise.resolve(
+            chrome.scripting.executeScript({
+              target: { tabId: params.tabId },
+              files: ["main-interceptor.js"],
+              world: "MAIN",
+            }),
+          ).catch(() => {});
+        }
 
         await activityRepo.logEvent({
           sessionId: session.id,
@@ -277,6 +434,7 @@ class CaptureController {
     this.activeTabId = null;
     this.trackedRequests.clear();
     this.pendingRequests.clear();
+    this.recentCapturedHashes.clear();
     if (this.autoPaginateState.status === "running") {
       this.autoPaginateState = {
         ...this.autoPaginateState,
@@ -310,6 +468,7 @@ class CaptureController {
       this.activeTabId = null;
       this.trackedRequests.clear();
       this.pendingRequests.clear();
+      this.recentCapturedHashes.clear();
       await this.syncBadge("detached");
     }
   }
@@ -321,7 +480,33 @@ class CaptureController {
     }
   }
 
-  public async onCdpEvent(
+  /**
+   * Serializes CDP events per requestId so rapid Network.responseReceived and
+   * Network.loadingFinished events execute strictly in arrival order without dropping responses.
+   */
+  public onCdpEvent(
+    debuggee: chrome.debugger.Debuggee,
+    method: string,
+    params?: any,
+  ): Promise<void> {
+    const requestId: string | undefined = params?.requestId;
+    if (!requestId) {
+      return this.handleCdpEventInternal(debuggee, method, params);
+    }
+    const previous = this.requestChains.get(requestId) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => this.handleCdpEventInternal(debuggee, method, params));
+    this.requestChains.set(requestId, next);
+    next.finally(() => {
+      if (this.requestChains.get(requestId) === next) {
+        this.requestChains.delete(requestId);
+      }
+    });
+    return next;
+  }
+
+  private async handleCdpEventInternal(
     debuggee: chrome.debugger.Debuggee,
     method: string,
     params?: any,
@@ -359,39 +544,58 @@ class CaptureController {
         });
 
         const url = req.url || "";
-        if (url.includes("/graphql")) {
-          const auth = req.headers?.Authorization || req.headers?.authorization;
-          if (auth && typeof auth === "string") {
-            try {
-              const origin = new URL(url).origin;
-              cdpAdapter.setAuthHeader(origin, auth).catch(() => {});
+        if (/(?:^|\/)graphql(?:\/|\?|$)/i.test(url)) {
+          try {
+            const reqOrigin = new URL(url, this.getSessionOrigin() || "https://go.bandahealth.org").origin;
+            const sessionOrigin = this.getSessionOrigin();
+            const isBatched = resolvedPostData
+              ? resolvedPostData.trim().startsWith("[") || undefined
+              : undefined;
+            cdpAdapter
+              .setGraphqlEndpoint(reqOrigin, url, isBatched)
+              .catch(() => {});
+            if (sessionOrigin && sessionOrigin !== reqOrigin) {
               cdpAdapter
-                .setGraphqlEndpoint(
-                  origin,
-                  url,
-                  resolvedPostData?.trim().startsWith("[") || undefined,
-                )
+                .setGraphqlEndpoint(sessionOrigin, url, isBatched)
                 .catch(() => {});
-            } catch {}
-          }
+            }
+            const auth = req.headers?.Authorization || req.headers?.authorization;
+            if (auth && typeof auth === "string") {
+              cdpAdapter.setAuthHeader(reqOrigin, auth).catch(() => {});
+              if (sessionOrigin && sessionOrigin !== reqOrigin) {
+                cdpAdapter.setAuthHeader(sessionOrigin, auth).catch(() => {});
+              }
+            }
+          } catch {}
         }
       }
       return;
     }
 
     if (method === "Network.responseReceived") {
-      const response = params.response;
-      const requestId = params.requestId;
+      const response = params?.response;
+      const requestId = params?.requestId;
+      if (!response || !requestId) return;
+
       const resourceType = params.type || "";
       const url = response.url || "";
       const mimeType = response.mimeType || "";
-      const httpStatus = response.status || 200;
+      const httpStatus = response.status ?? 200;
 
       const tracked = this.trackedRequests.get(requestId);
-      const httpMethod =
-        tracked?.httpMethod || response.requestHeaders?.[":method"] || "GET";
+      const httpMethod = (
+        tracked?.httpMethod ||
+        response.requestHeaders?.[":method"] ||
+        "GET"
+      ).toUpperCase();
 
-      const settings = await settingsRepo.getSettings();
+      // Skip CORS preflight and intentionally empty responses before entering pending map
+      if (httpMethod === "OPTIONS" || httpStatus === 204 || httpStatus === 205) {
+        this.trackedRequests.delete(requestId);
+        return;
+      }
+
+      const settings = this.cachedSettings || DEFAULT_SETTINGS;
       const eligibility = checkResponseEligibility({
         url,
         allowedHostnames: this.currentSession.allowedHostnames,
@@ -416,7 +620,8 @@ class CaptureController {
       }
       this.trackedRequests.delete(requestId);
     } else if (method === "Network.loadingFinished") {
-      const requestId = params.requestId;
+      const requestId = params?.requestId;
+      if (!requestId) return;
       const pending = this.pendingRequests.get(requestId);
       this.trackedRequests.delete(requestId);
       if (!pending) return;
@@ -430,9 +635,97 @@ class CaptureController {
 
       await this.processFinishedResponse(pending);
     } else if (method === "Network.loadingFailed") {
-      const requestId = params.requestId;
+      const requestId = params?.requestId;
+      if (!requestId) return;
       this.pendingRequests.delete(requestId);
       this.trackedRequests.delete(requestId);
+    }
+  }
+
+  private recordRecentHash(
+    sessionId: string,
+    contentHash: string,
+    envelope?: any,
+  ): void {
+    const now = Date.now();
+    for (const [k, ts] of Array.from(this.recentCapturedHashes.entries())) {
+      if (now - ts > 10_000) {
+        this.recentCapturedHashes.delete(k);
+      }
+    }
+    this.recentCapturedHashes.set(`${sessionId}:${contentHash}`, now);
+    if (
+      envelope &&
+      typeof envelope === "object" &&
+      envelope.data &&
+      typeof envelope.data === "object" &&
+      !Array.isArray(envelope.data)
+    ) {
+      for (const rootKey of Object.keys(envelope.data)) {
+        const rootHash = generateStableContentHash(envelope.data[rootKey]);
+        this.recentCapturedHashes.set(
+          `${sessionId}:root:${rootKey}:${rootHash}`,
+          now,
+        );
+      }
+    }
+  }
+
+  private hasRecentHash(
+    sessionId: string,
+    contentHash: string,
+    rootKey?: string,
+    rootVal?: unknown,
+  ): boolean {
+    const now = Date.now();
+    const directTs = this.recentCapturedHashes.get(`${sessionId}:${contentHash}`);
+    if (directTs !== undefined && now - directTs <= 10_000) {
+      return true;
+    }
+    if (rootKey !== undefined && rootVal !== undefined) {
+      const rootHash = generateStableContentHash(rootVal);
+      const rootTs = this.recentCapturedHashes.get(
+        `${sessionId}:root:${rootKey}:${rootHash}`,
+      );
+      if (rootTs !== undefined && now - rootTs <= 10_000) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private runSerializedExtraction<T>(
+    sessionId: string,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const prev = this.extractionChains.get(sessionId) || Promise.resolve();
+    const resultPromise = prev.catch(() => {}).then(task);
+    const tail = resultPromise.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.extractionChains.set(sessionId, tail);
+    tail.finally(() => {
+      if (this.extractionChains.get(sessionId) === tail) {
+        this.extractionChains.delete(sessionId);
+      }
+    });
+    return resultPromise;
+  }
+
+  private async getResponseBodyWithRetry(
+    tabId: number,
+    requestId: string,
+  ): Promise<string> {
+    try {
+      return await cdpAdapter.getResponseBody(tabId, requestId);
+    } catch (firstErr) {
+      await sleep(120);
+      try {
+        return await cdpAdapter.getResponseBody(tabId, requestId);
+      } catch {
+        throw firstErr;
+      }
     }
   }
 
@@ -440,32 +733,32 @@ class CaptureController {
     pending: PendingRequest,
   ): Promise<void> {
     if (!this.currentSession) return;
+    const sessionId = this.currentSession.id;
 
-    const sessionClearTime =
-      this.lastClearedAtBySession.get(this.currentSession.id) || 0;
+    const sessionClearTime = this.lastClearedAtBySession.get(sessionId) || 0;
     const discardThreshold = Math.max(sessionClearTime, this.globalClearedAt);
     if (pending.timestamp <= discardThreshold) {
       return;
     }
 
-    const settings = await settingsRepo.getSettings();
+    const settings = this.cachedSettings || DEFAULT_SETTINGS;
 
     let bodyText = "";
     try {
-      bodyText = await cdpAdapter.getResponseBody(
+      bodyText = await this.getResponseBodyWithRetry(
         pending.tabId,
         pending.requestId,
       );
     } catch (err: any) {
       // Re-check discard threshold in case clear was triggered while awaiting body
       const currentThreshold = Math.max(
-        this.lastClearedAtBySession.get(this.currentSession.id) || 0,
+        this.lastClearedAtBySession.get(sessionId) || 0,
         this.globalClearedAt,
       );
       if (pending.timestamp <= currentThreshold) return;
 
       await errorRepo.logError({
-        sessionId: this.currentSession.id,
+        sessionId,
         kind: "body_retrieval",
         url: redactSensitiveUrl(pending.url, settings.sensitiveUrlParams),
         message: err.message || "Could not retrieve response body",
@@ -475,7 +768,7 @@ class CaptureController {
 
     // Re-check discard threshold in case clear occurred during body retrieval
     const currentThreshold = Math.max(
-      this.lastClearedAtBySession.get(this.currentSession.id) || 0,
+      this.lastClearedAtBySession.get(sessionId) || 0,
       this.globalClearedAt,
     );
     if (pending.timestamp <= currentThreshold) {
@@ -485,7 +778,7 @@ class CaptureController {
     const responseBytes = new Blob([bodyText]).size;
     if (responseBytes > settings.maxResponseBodyBytes) {
       await errorRepo.logError({
-        sessionId: this.currentSession.id,
+        sessionId,
         kind: "storage_limit",
         url: redactSensitiveUrl(pending.url, settings.sensitiveUrlParams),
         message: `Response size (${(responseBytes / (1024 * 1024)).toFixed(2)} MB) exceeded limit (${(
@@ -508,7 +801,7 @@ class CaptureController {
 
       const rawResponse: RawResponse = {
         id: `resp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        sessionId: this.currentSession.id,
+        sessionId,
         capturedAt: new Date().toISOString(),
         url: redactSensitiveUrl(pending.url, settings.sensitiveUrlParams),
         normalizedEndpoint: normalizeEndpoint(pending.url, operationName),
@@ -538,13 +831,29 @@ class CaptureController {
       );
     const envelopes = isBatchedArray ? parsed : [parsed];
 
-    // Record discovered GraphQL endpoint URL + batch mode for active poller & writeback
+    // Record hashes synchronously before async extraction so passive bridge won't double-insert
+    const envelopeHashes = envelopes.map((env) => {
+      const h = generateStableContentHash(env);
+      this.recordRecentHash(sessionId, h, env);
+      return h;
+    });
+
+    // Record discovered GraphQL endpoint URL + batch mode for active poller & writeback under both origins
     if (pending.url.toLowerCase().includes("/graphql")) {
       try {
-        const origin = new URL(pending.url).origin;
+        const reqOrigin = new URL(
+          pending.url,
+          this.getSessionOrigin() || "https://go.bandahealth.org",
+        ).origin;
+        const sessionOrigin = this.getSessionOrigin();
         cdpAdapter
-          .setGraphqlEndpoint(origin, pending.url, isBatchedArray)
+          .setGraphqlEndpoint(reqOrigin, pending.url, isBatchedArray)
           .catch(() => {});
+        if (sessionOrigin && sessionOrigin !== reqOrigin) {
+          cdpAdapter
+            .setGraphqlEndpoint(sessionOrigin, pending.url, isBatchedArray)
+            .catch(() => {});
+        }
       } catch {}
     }
 
@@ -612,26 +921,28 @@ class CaptureController {
         }
       }
 
-      const contentHash = generateStableContentHash(envelope);
+      const contentHash = envelopeHashes[idx];
       const responseId = `resp_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
       const redactedUrl = redactSensitiveUrl(
         pending.url,
         settings.sensitiveUrlParams,
       );
 
-      const extraction = await this.extractAndConsolidate({
-        sessionId: this.currentSession.id,
-        responseId,
-        url: pending.url,
-        httpMethod: pending.httpMethod,
-        operationName: envelopeOpName,
-        requestBody: envelopePostData,
-        parsedData: envelope,
-      });
+      const extraction = await this.runSerializedExtraction(sessionId, () =>
+        this.extractAndConsolidate({
+          sessionId,
+          responseId,
+          url: pending.url,
+          httpMethod: pending.httpMethod,
+          operationName: envelopeOpName,
+          requestBody: envelopePostData,
+          parsedData: envelope,
+        }),
+      );
 
       const rawResponse: RawResponse = {
         id: responseId,
-        sessionId: this.currentSession.id,
+        sessionId,
         capturedAt: new Date().toISOString(),
         url: redactedUrl,
         normalizedEndpoint: normalizeEndpoint(pending.url, envelopeOpName),
@@ -654,6 +965,124 @@ class CaptureController {
 
       await rawResponseRepo.addResponse(rawResponse);
     }
+  }
+
+  /**
+   * Deduplicated fallback ingestion from passive MAIN-world BandaGo fetch/XHR hooks
+   * into the active recording session when CDP missed an event or DevTools interfered.
+   */
+  public async ingestPassiveBandaGoCatalog(params: {
+    tabId?: number;
+    endpointUrl?: string;
+    operationName?: string;
+    payload: unknown;
+  }): Promise<{ captured: boolean; extractedCount: number }> {
+    await this.init();
+
+    if (!this.currentSession || this.currentSession.status !== "recording") {
+      return { captured: false, extractedCount: 0 };
+    }
+    if (
+      typeof params.tabId === "number" &&
+      this.activeTabId &&
+      params.tabId !== this.activeTabId
+    ) {
+      return { captured: false, extractedCount: 0 };
+    }
+
+    const sessionId = this.currentSession.id;
+    const settings = this.cachedSettings || DEFAULT_SETTINGS;
+    const endpointUrl =
+      params.endpointUrl ||
+      `${this.getSessionOrigin() || "https://go.bandahealth.org"}/graphql/`;
+
+    const rawPayloads = Array.isArray(params.payload)
+      ? params.payload
+      : [params.payload];
+    const envelopesToProcess: Array<{
+      envelope: Record<string, any>;
+      rootKey?: string;
+      rootVal?: unknown;
+      opName?: string;
+    }> = [];
+
+    for (const item of rawPayloads) {
+      if (!item || typeof item !== "object") continue;
+      const dataObj = (item as any).data;
+      if (dataObj && typeof dataObj === "object" && !Array.isArray(dataObj)) {
+        const rootKeys = Object.keys(dataObj);
+        for (const rootKey of rootKeys) {
+          const val = dataObj[rootKey];
+          if (!val || typeof val !== "object") continue;
+          const envelope = { data: { [rootKey]: val } };
+          envelopesToProcess.push({
+            envelope,
+            rootKey,
+            rootVal: val,
+            opName:
+              rootKeys.length === 1 && params.operationName
+                ? params.operationName
+                : rootKey,
+          });
+        }
+      }
+    }
+
+    let totalExtracted = 0;
+    let capturedAny = false;
+
+    for (const [idx, entry] of envelopesToProcess.entries()) {
+      const contentHash = generateStableContentHash(entry.envelope);
+      if (
+        this.hasRecentHash(
+          sessionId,
+          contentHash,
+          entry.rootKey,
+          entry.rootVal,
+        )
+      ) {
+        continue;
+      }
+      this.recordRecentHash(sessionId, contentHash, entry.envelope);
+
+      const responseId = `passive_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+      const bodyStr = JSON.stringify(entry.envelope);
+      const extraction = await this.runSerializedExtraction(sessionId, () =>
+        this.extractAndConsolidate({
+          sessionId,
+          responseId,
+          url: endpointUrl,
+          httpMethod: "POST",
+          operationName: entry.opName,
+          parsedData: entry.envelope,
+        }),
+      );
+
+      const rawResponse: RawResponse = {
+        id: responseId,
+        sessionId,
+        capturedAt: new Date().toISOString(),
+        url: redactSensitiveUrl(endpointUrl, settings.sensitiveUrlParams),
+        normalizedEndpoint: normalizeEndpoint(endpointUrl, entry.opName),
+        httpStatus: 200,
+        httpMethod: "POST",
+        resourceType: "Fetch",
+        mimeType: "application/json",
+        responseBody: bodyStr,
+        parseStatus: "parsed",
+        responseBytes: new Blob([bodyStr]).size,
+        contentHash,
+        operationName: entry.opName,
+        extractedCount: extraction.extractedCount,
+        paginationMeta: extraction.paginationMeta,
+      };
+
+      await rawResponseRepo.addResponse(rawResponse);
+      capturedAny = true;
+      totalExtracted += extraction.extractedCount;
+    }
+
+    return { captured: capturedAny, extractedCount: totalExtracted };
   }
 
   /**
@@ -1397,6 +1826,7 @@ class CaptureController {
     if (isActiveSession) {
       this.trackedRequests.clear();
       this.pendingRequests.clear();
+      this.recentCapturedHashes.clear();
 
       if (this.autoPaginateState.status === "running") {
         this.stopAutoPaginateRequested = true;
@@ -1447,6 +1877,7 @@ class CaptureController {
     this.lastClearedAtBySession.clear();
     this.trackedRequests.clear();
     this.pendingRequests.clear();
+    this.recentCapturedHashes.clear();
 
     if (this.autoPaginateState.status === "running") {
       this.stopAutoPaginateRequested = true;

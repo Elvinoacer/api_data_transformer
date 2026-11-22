@@ -23,6 +23,54 @@ BandaGoWritebackEngine.init();
 
 let passiveMutationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Re-injects the MAIN/ISOLATED passive interceptors into already-open go.bandahealth.org
+ * tabs after extension install/update/reload so existing SPA tabs don't go silent.
+ */
+async function injectBandaGoInterceptorsIntoOpenTabs(): Promise<void> {
+  try {
+    if (
+      typeof chrome === "undefined" ||
+      !chrome.tabs?.query ||
+      !chrome.scripting?.executeScript
+    ) {
+      return;
+    }
+    const tabs = await chrome.tabs.query({ url: "*://go.bandahealth.org/*" });
+    for (const tab of tabs) {
+      if (typeof tab.id !== "number") continue;
+      await chrome.scripting
+        .executeScript({
+          target: { tabId: tab.id },
+          files: ["isolated-bridge.js"],
+          world: "ISOLATED",
+        })
+        .catch(() => {});
+      await chrome.scripting
+        .executeScript({
+          target: { tabId: tab.id },
+          files: ["main-interceptor.js"],
+          world: "MAIN",
+        })
+        .catch(() => {});
+    }
+  } catch {
+    // Non-fatal in non-browser test runs
+  }
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime?.onInstalled?.addListener) {
+  chrome.runtime.onInstalled.addListener(() => {
+    injectBandaGoInterceptorsIntoOpenTabs().catch(() => {});
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.runtime?.onStartup?.addListener) {
+  chrome.runtime.onStartup.addListener(() => {
+    injectBandaGoInterceptorsIntoOpenTabs().catch(() => {});
+  });
+}
+
 // 1. Top-level Debugger Event Listener
 chrome.debugger.onEvent.addListener((source, method, params) => {
   captureController.onCdpEvent(source, method, params).catch((err) => {
@@ -300,9 +348,32 @@ chrome.runtime.onMessage.addListener(
           }
 
           case "BANDAGO_PASSIVE_CATALOG": {
+            const passiveMsg = message as any;
+            const ingestRes = await captureController
+              .ingestPassiveBandaGoCatalog({
+                tabId: sender.tab?.id,
+                endpointUrl:
+                  typeof passiveMsg.endpointUrl === "string"
+                    ? passiveMsg.endpointUrl
+                    : undefined,
+                operationName:
+                  typeof passiveMsg.operationName === "string"
+                    ? passiveMsg.operationName
+                    : undefined,
+                payload: message.payload,
+              })
+              .catch(() => ({ captured: false, extractedCount: 0 }));
+
             const cfg = await SphereSyncClient.getConfig();
             if (!cfg.enabled) {
-              sendResponse({ success: true, data: { skipped: true } });
+              sendResponse({
+                success: true,
+                data: {
+                  skipped: true,
+                  capturedToSession: ingestRes.captured,
+                  extractedCount: ingestRes.extractedCount,
+                },
+              });
               break;
             }
             const normalized = BandaGoNormalizer.extractProductsFromPayload(
@@ -339,7 +410,11 @@ chrome.runtime.onMessage.addListener(
             }
             sendResponse({
               success: true,
-              data: { captured: normalized.length },
+              data: {
+                captured: normalized.length,
+                capturedToSession: ingestRes.captured,
+                extractedCount: ingestRes.extractedCount,
+              },
             });
             break;
           }
@@ -364,18 +439,28 @@ chrome.runtime.onMessage.addListener(
               usesBatchArray?: boolean;
             };
             if (payload.endpointUrl) {
-              let origin = "https://go.bandahealth.org";
+              let tabOrigin = "https://go.bandahealth.org";
+              let endpointOrigin: string | null = null;
               try {
-                origin = new URL(
-                  sender.tab?.url || payload.endpointUrl,
-                  origin,
-                ).origin;
+                if (sender.tab?.url) {
+                  tabOrigin = new URL(sender.tab.url).origin;
+                }
+              } catch {}
+              try {
+                endpointOrigin = new URL(payload.endpointUrl, tabOrigin).origin;
               } catch {}
               await cdpAdapter.setGraphqlEndpoint(
-                origin,
+                tabOrigin,
                 payload.endpointUrl,
                 payload.usesBatchArray,
               );
+              if (endpointOrigin && endpointOrigin !== tabOrigin) {
+                await cdpAdapter.setGraphqlEndpoint(
+                  endpointOrigin,
+                  payload.endpointUrl,
+                  payload.usesBatchArray,
+                );
+              }
             }
             sendResponse({ success: true });
             break;

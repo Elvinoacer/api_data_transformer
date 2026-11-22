@@ -34,6 +34,7 @@ import {
   SphereSyncClient,
   SyncConfig,
   SyncDiagnostics,
+  validateSphereEndpointUrl,
 } from "../../sync/sphere-client";
 import {
   ClearAllDataPayload,
@@ -202,8 +203,31 @@ export const Settings: React.FC<Props> = ({
     setTestingConnection(true);
     setTestResult(null);
     try {
-      await ensureOriginPermission(sphereConfig.endpointUrl);
-      const res = await SphereSyncClient.testConnection(sphereConfig);
+      const trimmedCfg: SyncConfig = {
+        ...sphereConfig,
+        endpointUrl: sphereConfig.endpointUrl.trim(),
+        apiKey: sphereConfig.apiKey.trim(),
+        pharmacyId: (sphereConfig.pharmacyId || "DEFAULT_STORE").trim(),
+        expectedTenantUU: (sphereConfig.expectedTenantUU || "").trim(),
+      };
+      await ensureOriginPermission(trimmedCfg.endpointUrl);
+      const hasRuntime =
+        typeof chrome !== "undefined" &&
+        typeof chrome.runtime?.sendMessage === "function";
+      let res: { ok: boolean; status?: number; error?: string };
+      if (hasRuntime) {
+        const msg = await sendExtensionMessage<
+          SyncConfig,
+          { ok: boolean; status?: number; error?: string }
+        >("SPHERE_TEST_CONNECTION", trimmedCfg);
+        res =
+          msg.success && msg.data
+            ? msg.data
+            : { ok: false, error: msg.error || "Connection test failed" };
+      } else {
+        res = await SphereSyncClient.testConnection(trimmedCfg);
+      }
+
       if (res.ok) {
         setTestResult({
           ok: true,
@@ -232,7 +256,22 @@ export const Settings: React.FC<Props> = ({
   const handleFlushQueueNow = async () => {
     setFlushingQueue(true);
     try {
-      const result = await SphereSyncClient.flushQueue();
+      const hasRuntime =
+        typeof chrome !== "undefined" &&
+        typeof chrome.runtime?.sendMessage === "function";
+      let result: { synced: number; failed: number; error?: string };
+      if (hasRuntime) {
+        const msg = await sendExtensionMessage<
+          undefined,
+          { synced: number; failed: number; error?: string }
+        >("SPHERE_FLUSH_QUEUE");
+        result =
+          msg.success && msg.data
+            ? msg.data
+            : { synced: 0, failed: 0, error: msg.error || "Flush failed" };
+      } else {
+        result = await SphereSyncClient.flushQueue();
+      }
       await refreshQueueStats();
       if (result.synced > 0) {
         notify({
@@ -262,7 +301,18 @@ export const Settings: React.FC<Props> = ({
   };
 
   const handleRetryFailedItems = async () => {
-    const count = await SphereSyncClient.retryFailed();
+    const hasRuntime =
+      typeof chrome !== "undefined" &&
+      typeof chrome.runtime?.sendMessage === "function";
+    let count = 0;
+    if (hasRuntime) {
+      const msg = await sendExtensionMessage<undefined, { retriedCount: number }>(
+        "SPHERE_RETRY_FAILED",
+      );
+      count = msg.data?.retriedCount ?? 0;
+    } else {
+      count = await SphereSyncClient.retryFailed();
+    }
     await refreshQueueStats();
     notify({
       title: "Failed Items Queued",
@@ -280,7 +330,14 @@ export const Settings: React.FC<Props> = ({
       lastPollSuccess:
         prev.lastPollSuccess === false ? null : prev.lastPollSuccess,
     }));
-    await SphereSyncClient.dismissActiveErrors();
+    const hasRuntime =
+      typeof chrome !== "undefined" &&
+      typeof chrome.runtime?.sendMessage === "function";
+    if (hasRuntime) {
+      await sendExtensionMessage("SPHERE_DISMISS_ERRORS");
+    } else {
+      await SphereSyncClient.dismissActiveErrors();
+    }
     await refreshQueueStats();
     notify({
       title: "Error Dismissed",
@@ -299,7 +356,14 @@ export const Settings: React.FC<Props> = ({
       lastPollSuccess:
         prev.lastPollSuccess === false ? null : prev.lastPollSuccess,
     }));
-    await SphereSyncClient.clearErrorHistory();
+    const hasRuntime =
+      typeof chrome !== "undefined" &&
+      typeof chrome.runtime?.sendMessage === "function";
+    if (hasRuntime) {
+      await sendExtensionMessage("SPHERE_CLEAR_ERRORS");
+    } else {
+      await SphereSyncClient.clearErrorHistory();
+    }
     await refreshQueueStats();
     notify({
       title: "Error Log Cleared",
@@ -714,15 +778,60 @@ export const Settings: React.FC<Props> = ({
                   endpointUrl: e.target.value,
                 }))
               }
-              onBlur={() =>
+              onBlur={() => {
+                const trimmed = sphereConfig.endpointUrl.trim();
+                if (trimmed !== sphereConfig.endpointUrl) {
+                  setSphereConfig((prev) => ({ ...prev, endpointUrl: trimmed }));
+                }
                 handleUpdateSphereConfig(
-                  { endpointUrl: sphereConfig.endpointUrl },
+                  { endpointUrl: trimmed },
                   "Updated Sphere ingestion endpoint URL",
-                )
-              }
+                );
+              }}
               placeholder="https://your-pharmacy-store.com/api/integrations/bandago/sync"
               className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl font-mono text-xs focus:bg-white focus:outline-none focus:border-emerald-600"
             />
+            {(() => {
+              const validation = validateSphereEndpointUrl(sphereConfig.endpointUrl);
+              if (!validation.warning) return null;
+              return (
+                <div
+                  role="alert"
+                  className="mt-2 p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-[11px] text-amber-950 flex flex-wrap items-center justify-between gap-2"
+                >
+                  <div className="flex items-start gap-1.5 min-w-0">
+                    <AlertTriangle
+                      className="w-3.5 h-3.5 text-amber-700 flex-shrink-0 mt-0.5"
+                      aria-hidden="true"
+                    />
+                    <div className="space-y-0.5">
+                      <p className="font-semibold">{validation.warning}</p>
+                      {validation.suggestedFix && (
+                        <p className="font-mono text-[10px] text-amber-900 break-all">
+                          Suggested: {validation.suggestedFix}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  {validation.suggestedFix && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const fixed = validation.suggestedFix!;
+                        setSphereConfig((prev) => ({ ...prev, endpointUrl: fixed }));
+                        handleUpdateSphereConfig(
+                          { endpointUrl: fixed },
+                          "Corrected Sphere ingestion endpoint URL",
+                        );
+                      }}
+                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold rounded-lg transition flex-shrink-0"
+                    >
+                      Fix URL
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
             <p className="text-[11px] text-stone-500 mt-1">
               The Next.js API route receiving normalized POS medication catalogs
               and stock deltas. Supports custom domains, Vercel previews, or
@@ -748,12 +857,16 @@ export const Settings: React.FC<Props> = ({
                     apiKey: e.target.value,
                   }))
                 }
-                onBlur={() =>
+                onBlur={() => {
+                  const trimmed = sphereConfig.apiKey.trim();
+                  if (trimmed !== sphereConfig.apiKey) {
+                    setSphereConfig((prev) => ({ ...prev, apiKey: trimmed }));
+                  }
                   handleUpdateSphereConfig(
-                    { apiKey: sphereConfig.apiKey },
+                    { apiKey: trimmed },
                     "Updated Sphere API Key",
-                  )
-                }
+                  );
+                }}
                 placeholder="Enter BANDAGO_SYNC_API_KEY"
                 className="w-full px-3 py-2 pr-9 bg-stone-50 border border-stone-300 rounded-xl font-mono text-xs focus:bg-white focus:outline-none focus:border-emerald-600"
               />
@@ -793,12 +906,14 @@ export const Settings: React.FC<Props> = ({
                   pharmacyId: e.target.value,
                 }))
               }
-              onBlur={() =>
+              onBlur={() => {
+                const trimmed = (sphereConfig.pharmacyId || "").trim() || "DEFAULT_STORE";
+                setSphereConfig((prev) => ({ ...prev, pharmacyId: trimmed }));
                 handleUpdateSphereConfig(
-                  { pharmacyId: sphereConfig.pharmacyId },
+                  { pharmacyId: trimmed },
                   "Updated Pharmacy Store Identifier",
-                )
-              }
+                );
+              }}
               placeholder="e.g. DEFAULT_STORE or STORE-001"
               className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl font-mono text-xs focus:bg-white focus:outline-none focus:border-emerald-600"
             />
@@ -825,12 +940,14 @@ export const Settings: React.FC<Props> = ({
                   expectedTenantUU: e.target.value,
                 }))
               }
-              onBlur={() =>
+              onBlur={() => {
+                const trimmed = (sphereConfig.expectedTenantUU || "").trim();
+                setSphereConfig((prev) => ({ ...prev, expectedTenantUU: trimmed }));
                 handleUpdateSphereConfig(
-                  { expectedTenantUU: sphereConfig.expectedTenantUU },
+                  { expectedTenantUU: trimmed },
                   "Updated Expected BandaGo Tenant UU",
-                )
-              }
+                );
+              }}
               placeholder="Optional iDempiere AD_Client.UU"
               className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl font-mono text-xs focus:bg-white focus:outline-none focus:border-emerald-600"
             />

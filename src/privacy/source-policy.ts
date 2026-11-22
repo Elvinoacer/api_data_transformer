@@ -170,7 +170,7 @@ export function checkResponseEligibility(params: {
   }
 
   // 6. Resource type filter: primarily XHR, Fetch, Other (and Document if direct JSON API tab)
-  const normalizedResourceType = resourceType.toLowerCase();
+  const normalizedResourceType = (resourceType || "other").toLowerCase();
   const eligibleResourceTypes = ["xhr", "fetch", "other", "document"];
   if (!eligibleResourceTypes.includes(normalizedResourceType)) {
     return {
@@ -179,14 +179,17 @@ export function checkResponseEligibility(params: {
     };
   }
 
-  // 7. MIME type filter (supports standard JSON, vendor +json like vnd.api+json / hal+json, and XHR/Fetch text/plain or missing MIME)
+  // 7. MIME type filter (supports standard JSON, vendor +json like vnd.api+json / hal+json / graphql-response+json, and permissive XHR/Fetch/GraphQL)
+  const isGraphqlPath = /(?:^|\/)graphql(?:\/|$)/i.test(parsed.pathname);
   const normalizedMime = mimeType.toLowerCase().trim();
   const hasJsonMime =
-    normalizedMime.includes("json") || // covers application/json, text/json, application/vnd.api+json, application/ld+json, etc.
+    normalizedMime.includes("json") || // covers application/json, application/graphql-response+json, text/json, application/vnd.api+json, etc.
     normalizedMime.includes("javascript");
 
   const isFetchWithPermissiveMime =
-    (normalizedResourceType === "xhr" || normalizedResourceType === "fetch") &&
+    (normalizedResourceType === "xhr" ||
+      normalizedResourceType === "fetch" ||
+      (normalizedResourceType === "other" && isGraphqlPath)) &&
     (normalizedMime === "" ||
       normalizedMime.includes("text/plain") ||
       normalizedMime.includes("application/octet-stream"));

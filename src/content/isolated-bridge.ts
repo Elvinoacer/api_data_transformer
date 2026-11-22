@@ -9,6 +9,8 @@
   }
   (window as unknown as Record<string, unknown>).__SPHERE_ISOLATED_BRIDGE__ = true;
 
+  let lastDiscoveredEndpointUrl = "";
+
   window.addEventListener("message", (event: MessageEvent) => {
     if (event.source !== window) return;
     if (event.origin !== window.location.origin) return;
@@ -23,6 +25,9 @@
           .sendMessage({
             type: "BANDAGO_PASSIVE_CATALOG",
             operationName: msg.operationName,
+            endpointUrl:
+              lastDiscoveredEndpointUrl ||
+              `${window.location.origin}/graphql/`,
             payload: msg.payload,
           })
           .catch(() => {});
@@ -47,6 +52,7 @@
       }>;
       const endpointUrl = custom?.detail?.endpointUrl;
       if (typeof endpointUrl !== "string" || !endpointUrl) return;
+      lastDiscoveredEndpointUrl = endpointUrl;
       try {
         chrome.runtime
           .sendMessage({

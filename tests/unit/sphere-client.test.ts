@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { SphereSyncClient } from "../../src/sync/sphere-client";
+import {
+  SphereSyncClient,
+  validateSphereEndpointUrl,
+} from "../../src/sync/sphere-client";
 import { SyncQueueManager, coalesceSyncItems } from "../../src/sync/sync-queue";
 import { db } from "../../src/data/db";
 
@@ -1131,5 +1134,85 @@ describe("SphereSyncClient & SyncQueueManager", () => {
 
     await SphereSyncClient.deleteQueueItem(123);
     expect(deleteSpy).toHaveBeenCalledWith(123);
+  });
+
+  it("validateSphereEndpointUrl flags misspelled intergrations path and suggests fix", () => {
+    const res = validateSphereEndpointUrl(
+      "  https://sphere-pharmacy.vercel.app/api/intergrations/bandago/sync  ",
+    );
+    expect(res.suggestedFix).toBe(
+      "https://sphere-pharmacy.vercel.app/api/integrations/bandago/sync",
+    );
+    expect(res.warning).toContain("intergrations");
+
+    const rootRes = validateSphereEndpointUrl("https://sphere-pharmacy.vercel.app");
+    expect(rootRes.suggestedFix).toBe(
+      "https://sphere-pharmacy.vercel.app/api/integrations/bandago/sync",
+    );
+  });
+
+  it("testConnection and flushQueue reject HTTP 200 HTML / non-JSON responses instead of reporting fake success", async () => {
+    (global as any).chrome.storage.local.store = {
+      sphere_endpoint_url:
+        "https://sphere-pharmacy.vercel.app/api/intergrations/bandago/sync",
+      sphere_api_key: "test-key",
+      sphere_sync_enabled: true,
+    };
+
+    const htmlResponse = {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type"
+            ? "text/html; charset=utf-8"
+            : null,
+      },
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    } as any;
+
+    global.fetch = vi.fn().mockResolvedValue(htmlResponse);
+
+    const handshake = await SphereSyncClient.testConnection({
+      endpointUrl:
+        "https://sphere-pharmacy.vercel.app/api/intergrations/bandago/sync",
+      apiKey: "test-key",
+      enabled: true,
+    });
+    expect(handshake.ok).toBe(false);
+    expect(handshake.error).toContain("non-JSON response");
+    expect(handshake.error).toContain("/api/integrations/bandago/sync");
+
+    const pendingItem = {
+      id: 77,
+      externalPosId: "pos-html-77",
+      payload: { externalPosId: "pos-html-77", name: "Test Drug", stock: 5 },
+      status: "PENDING" as const,
+      retryCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    vi.spyOn(SyncQueueManager, "recoverStaleSyncing").mockResolvedValue(0);
+    vi.spyOn(SyncQueueManager, "getPending").mockResolvedValueOnce([pendingItem]);
+    vi.spyOn(SyncQueueManager, "markSyncing").mockResolvedValue();
+    const markSuccessSpy = vi
+      .spyOn(SyncQueueManager, "markSuccess")
+      .mockResolvedValue();
+    const markFailedSpy = vi
+      .spyOn(SyncQueueManager, "markFailed")
+      .mockResolvedValue();
+
+    const flush = await SphereSyncClient.flushQueue("MANUAL");
+    expect(markSuccessSpy).not.toHaveBeenCalled();
+    expect(markFailedSpy).toHaveBeenCalledWith(
+      [pendingItem],
+      expect.stringContaining("/api/integrations/bandago/sync"),
+      SphereSyncClient.MAX_RETRIES,
+    );
+    expect(flush.synced).toBe(0);
+    expect(flush.failed).toBe(1);
+    expect(flush.error).toContain("non-JSON response");
   });
 });
